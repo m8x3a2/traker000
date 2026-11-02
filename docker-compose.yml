@@ -1,0 +1,79 @@
+# Запуск:            docker compose up -d --build
+# С мониторингом:    docker compose --profile monitoring up -d --build
+#   приложение  http://localhost        документация API  http://localhost/api/docs
+#   Prometheus  http://localhost:9090   Grafana           http://localhost:3000 (admin / GRAFANA_PASSWORD)
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: traker000
+      POSTGRES_USER: ${POSTGRES_USER:-traker}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-traker_password}
+    # Доступ к БД с этого компьютера (pgAdmin): localhost:5433. Только 127.0.0.1 — снаружи недоступно
+    ports:
+      - "127.0.0.1:${DB_PORT:-5433}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-traker} -d traker000"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build: ./backend
+    image: ${IMAGE_PREFIX:-traker000}-backend:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-traker}:${POSTGRES_PASSWORD:-traker_password}@db:5432/traker000
+      SECRET_KEY: ${SECRET_KEY:-change-me-in-env-file}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_FORMAT: json
+    depends_on:
+      db:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }  # ротация логов контейнера
+
+  frontend:
+    build: ./frontend
+    image: ${IMAGE_PREFIX:-traker000}-frontend:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-80}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    profiles: [monitoring]
+    restart: unless-stopped
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - promdata:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    depends_on: [backend]
+
+  grafana:
+    image: grafana/grafana:11.3.1
+    profiles: [monitoring]
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on: [prometheus]
+
+volumes:
+  pgdata:
+  promdata:

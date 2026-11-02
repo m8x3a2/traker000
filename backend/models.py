@@ -8,6 +8,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Integer,
+    LargeBinary,
     String,
     Table,
     Text,
@@ -46,6 +47,10 @@ class User(Base):
     tasks = relationship("Task", back_populates="user", cascade="all, delete-orphan")
     tags = relationship("Tag", back_populates="user", cascade="all, delete-orphan")
     diary_cards = relationship("DiaryCard", back_populates="user", cascade="all, delete-orphan")
+    timer_presets = relationship(
+        "TimerPreset", back_populates="user", cascade="all, delete-orphan", order_by="TimerPreset.position"
+    )
+    refresh_tokens = relationship("RefreshToken", back_populates="user", cascade="all, delete-orphan")
 
 
 class UserSettings(Base):
@@ -56,6 +61,7 @@ class UserSettings(Base):
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
     theme = Column(String(10), nullable=False, default="dark")  # dark | light | custom
     custom_colors = Column(JSON, nullable=True)  # {"bg": "#...", "surface": "#...", ...}
+    timers_seeded = Column(Boolean, nullable=False, default=False)  # стандартные шаблоны таймера уже скопированы
 
     user = relationship("User", back_populates="settings")
 
@@ -163,3 +169,56 @@ class DiaryCard(Base):
     updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
     user = relationship("User", back_populates="diary_cards")
+
+
+class TimerPreset(Base):
+    """Шаблон фокус-таймера: блоки (JSON) повторяются rounds раз, между кругами — перерыв.
+    Здесь же хранятся звуки начала/окончания шага и режим перехода к следующему шагу."""
+
+    __tablename__ = "timer_presets"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    title = Column(String(40), nullable=False)
+    blocks = Column(JSON, nullable=False)  # [{"title": "Работа", "seconds": 1500, "color": "#..."}]
+    break_seconds = Column(Integer, nullable=False, default=0)  # перерыв между кругами
+    rounds = Column(Integer, nullable=False, default=1)
+    sound_start = Column(String(40), nullable=False, default="bell")  # bell | beep | gong | none | custom:<id>
+    sound_end = Column(String(40), nullable=False, default="gong")
+    auto_continue = Column(Boolean, nullable=False, default=True)  # False — ждать нажатия «ОК»
+    auto_delay = Column(Integer, nullable=False, default=5)  # пауза перед автозапуском следующего шага, сек
+    voice = Column(Boolean, nullable=False, default=False)  # озвучка шагов и кругов голосом
+    position = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime(timezone=True), default=utcnow)
+
+    user = relationship("User", back_populates="timer_presets")
+
+
+class TimerSound(Base):
+    """Звук таймера, загруженный администратором (доступен всем пользователям)."""
+
+    __tablename__ = "timer_sounds"
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String(40), nullable=False)
+    content_type = Column(String(40), nullable=False)
+    data = Column(LargeBinary, nullable=False)
+    size = Column(Integer, nullable=False)
+    duration_ms = Column(Integer, nullable=False)
+    uploaded_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utcnow)
+
+
+class RefreshToken(Base):
+    """Refresh-токен. В БД хранится только SHA-256 хеш, токен одноразовый (ротация при обновлении)."""
+
+    __tablename__ = "refresh_tokens"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    token_hash = Column(String(64), nullable=False, unique=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    revoked = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime(timezone=True), default=utcnow)
+
+    user = relationship("User", back_populates="refresh_tokens")

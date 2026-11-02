@@ -12,8 +12,8 @@ export default function Login({ onLogin, navigate }) {
     setError('')
     setBusy(true)
     try {
-      const { access_token } = await api('/login', { method: 'POST', body: { username, password } })
-      await onLogin(access_token)
+      const tokens = await api('/login', { method: 'POST', body: { username, password } })
+      await onLogin(tokens)
     } catch (err) {
       setError(err.message)
     } finally {
