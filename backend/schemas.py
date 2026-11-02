@@ -53,7 +53,25 @@ class UserLogin(BaseModel):
 
 class Token(BaseModel):
     access_token: str
+    refresh_token: str | None = None
     token_type: str = "bearer"
+    expires_in: int = Field(default=0, description="Время жизни access-токена, секунд")
+
+    model_config = ConfigDict(json_schema_extra={"example": {
+        "access_token": "eyJhbGciOiJIUzI1NiIs...", "refresh_token": "kq3V...Zs", "token_type": "bearer", "expires_in": 1800,
+    }})
+
+
+class RefreshIn(BaseModel):
+    refresh_token: str = Field(min_length=20, max_length=200)
+
+
+class ErrorOut(BaseModel):
+    """Формат ошибки API (как у FastAPI). Для ошибок валидации (422) detail — список."""
+
+    detail: str
+
+    model_config = ConfigDict(json_schema_extra={"example": {"detail": "Задача не найдена"}})
 
 
 class UserOut(ORMModel):
@@ -329,6 +347,88 @@ class AdminStatsOut(BaseModel):
     tasks: int
     diary_cards: int
     templates: int
+    timer_presets: int = 0
+    timer_sounds: int = 0
+
+
+# ---------- Фокус-таймер ----------
+
+BUILTIN_SOUNDS = {"bell": "Колокольчик", "beep": "Сигнал", "gong": "Гонг"}
+SOUND_RE = re.compile(r"^(none|bell|beep|gong|custom:\d{1,9})$")
+MAX_BLOCK_SECONDS = 600 * 60 + 59  # 600 мин 59 сек
+
+
+def _check_sound(v: str) -> str:
+    if not SOUND_RE.match(v):
+        raise ValueError("Звук: bell, beep, gong, none или custom:<id>")
+    return v
+
+
+class TimerBlock(BaseModel):
+    title: str = Field(min_length=1, max_length=30)
+    seconds: int = Field(ge=1, le=MAX_BLOCK_SECONDS)
+    color: str = "#30a46c"
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def strip_title(cls, v):
+        return _strip(v)
+
+    @field_validator("color")
+    @classmethod
+    def check_color(cls, v):
+        return _check_hex(v)
+
+
+class TimerPresetIn(BaseModel):
+    title: str = Field(min_length=1, max_length=40)
+    blocks: list[TimerBlock] = Field(min_length=1, max_length=20)
+    break_seconds: int = Field(default=0, ge=0, le=3600, description="Перерыв между кругами")
+    rounds: int = Field(default=1, ge=1, le=99)
+    sound_start: str = "bell"
+    sound_end: str = "gong"
+    auto_continue: bool = Field(default=True, description="false — после звукового сигнала ждать нажатия «ОК»")
+    auto_delay: int = Field(default=5, ge=0, le=60, description="Пауза перед автозапуском следующего шага, сек")
+    voice: bool = Field(default=False, description="Озвучивать шаги и круги голосом")
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def strip_title(cls, v):
+        return _strip(v)
+
+    @field_validator("sound_start", "sound_end")
+    @classmethod
+    def check_sound(cls, v):
+        return _check_sound(v)
+
+    model_config = ConfigDict(json_schema_extra={"example": {
+        "title": "Учёба", "rounds": 4, "break_seconds": 0,
+        "blocks": [{"title": "Учёба", "seconds": 2700, "color": "#30a46c"},
+                   {"title": "Разминка", "seconds": 600, "color": "#3e7bfa"}],
+        "sound_start": "bell", "sound_end": "gong", "auto_continue": False, "auto_delay": 5, "voice": True,
+    }})
+
+
+class TimerPresetOut(TimerPresetIn, ORMModel):
+    id: int
+    position: int = 0
+    total_seconds: int = 0  # полная длительность: блоки × круги + перерывы между кругами
+
+
+class TimerSoundOut(ORMModel):
+    id: int
+    name: str
+    content_type: str
+    size: int
+    duration_ms: int
+    created_at: dt.datetime | None = None
+
+
+class SoundOption(BaseModel):
+    id: str  # bell | beep | gong | custom:<id>
+    name: str
+    builtin: bool
+    url: str | None = None
 
 
 # ---------- Экспорт / импорт ----------
@@ -356,7 +456,7 @@ class ExportDiary(DiaryCardBase):
 
 class ExportData(BaseModel):
     app: Literal["traker000"] = "traker000"
-    version: int = 2
+    version: int = 3
     exported_at: dt.datetime | None = None
     settings: SettingsBase | None = None
     note: str = Field(default="", max_length=20000)
@@ -364,6 +464,7 @@ class ExportData(BaseModel):
     tags: list[TagIn] = Field(default_factory=list, max_length=200)
     tasks: list[ExportTask] = Field(default_factory=list, max_length=10000)
     diary: list[ExportDiary] = Field(default_factory=list, max_length=10000)
+    timers: list[TimerPresetIn] | None = Field(default=None, max_length=100)  # None — файл старой версии
 
     @model_validator(mode="before")
     @classmethod
@@ -393,3 +494,13 @@ class ImportResult(BaseModel):
     tasks: int
     tags: int
     diary: int
+    timers: int = 0
+
+
+# ---------- Служебное ----------
+
+class HealthOut(BaseModel):
+    status: Literal["ok", "error"]
+    database: Literal["ok", "error"] | None = None
+    version: str
+    uptime_seconds: int

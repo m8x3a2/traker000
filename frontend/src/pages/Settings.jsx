@@ -146,7 +146,7 @@ function DataSection({ onImported }) {
     try {
       const res = await api('/import', { method: 'POST', body: pending.data })
       setPending(null)
-      setMessage({ type: 'success', text: `${res.detail}: привычек ${res.habits}, задач ${res.tasks}, тегов ${res.tags}, записей дневника ${res.diary}` })
+      setMessage({ type: 'success', text: `${res.detail}: привычек ${res.habits}, задач ${res.tasks}, тегов ${res.tags}, записей дневника ${res.diary}, шаблонов таймера ${res.timers}` })
       await onImported()
     } catch (e) {
       setPending(null)
@@ -162,7 +162,7 @@ function DataSection({ onImported }) {
     <section className="card stack">
       <h2>Данные</h2>
       <p className="muted small">
-        Экспорт сохраняет все ваши привычки, задачи, теги, дневник, заметку и тему в JSON-файл.
+        Экспорт сохраняет все ваши привычки, задачи, теги, дневник, заметку, шаблоны таймера и тему в JSON-файл.
         Импорт <b>заменяет</b> текущие данные содержимым файла.
       </p>
       {message && <div className={`alert alert-${message.type}`}>{message.text}</div>}
@@ -179,7 +179,7 @@ function DataSection({ onImported }) {
             Это действие нельзя отменить.
           </div>
           <p className="small">
-            Файл <b>{pending.fileName}</b>: привычек {count('habits')}, задач {count('tasks')}, тегов {count('tags')}, записей дневника {count('diary')}.
+            Файл <b>{pending.fileName}</b>: привычек {count('habits')}, задач {count('tasks')}, тегов {count('tags')}, записей дневника {count('diary')}, шаблонов таймера {count('timers')}.
           </p>
           <p className="small muted">Совет: сначала сделайте экспорт текущих данных, чтобы иметь резервную копию.</p>
         </ConfirmDialog>

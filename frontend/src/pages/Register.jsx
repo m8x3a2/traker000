@@ -26,8 +26,8 @@ export default function Register({ onLogin, navigate }) {
     try {
       const body = { username: username.trim(), password }
       await api('/register', { method: 'POST', body })
-      const { access_token } = await api('/login', { method: 'POST', body })
-      await onLogin(access_token)
+      const tokens = await api('/login', { method: 'POST', body })
+      await onLogin(tokens)
     } catch (err) {
       setError(err.message)
     } finally {

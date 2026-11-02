@@ -1,0 +1,30 @@
+groups:
+  - name: traker
+    rules:
+      - alert: BackendDown
+        expr: up{job="traker-backend"} == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "Бэкенд Traker000 недоступен больше минуты"
+
+      - alert: HighErrorRate
+        expr: sum(rate(traker_http_requests_total{status=~"5.."}[5m])) / sum(rate(traker_http_requests_total[5m])) > 0.05
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Больше 5% ответов с ошибкой 5xx"
+
+      - alert: SlowResponses
+        expr: histogram_quantile(0.95, sum by (le) (rate(traker_http_request_duration_seconds_bucket[5m]))) > 0.3
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "95-й перцентиль времени ответа больше 300 мс (требование НФТ)"
+
+      - alert: LoginBruteforce
+        expr: rate(traker_logins_total{result="fail"}[5m]) * 60 > 30
+        for: 2m
+        labels: { severity: warning }
+        annotations:
+          summary: "Больше 30 неудачных входов в минуту — возможен подбор пароля"

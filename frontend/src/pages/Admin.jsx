@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../api'
 import { ConfirmDialog } from '../components/Modal'
 import IconPicker from '../components/IconPicker'
+import { playSound } from '../timer/sounds'
 
-const TABS = [['stats', 'Статистика'], ['users', 'Пользователи'], ['templates', 'Каталог привычек']]
+const TABS = [['stats', 'Статистика'], ['users', 'Пользователи'], ['templates', 'Каталог привычек'], ['sounds', 'Звуки таймера']]
 
 export default function Admin({ user }) {
   const [tab, setTab] = useState('stats')
@@ -12,7 +13,7 @@ export default function Admin({ user }) {
       <div className="page-header">
         <div>
           <h1>Администрирование</h1>
-          <p className="subtitle">Пользователи, роли и каталог привычек</p>
+          <p className="subtitle">Пользователи, роли, каталог привычек и звуки таймера</p>
         </div>
       </div>
       <div className="tabs">
@@ -23,6 +24,7 @@ export default function Admin({ user }) {
       {tab === 'stats' && <SystemStats />}
       {tab === 'users' && <Users currentUser={user} />}
       {tab === 'templates' && <Templates />}
+      {tab === 'sounds' && <Sounds />}
     </div>
   )
 }
@@ -37,7 +39,7 @@ function SystemStats() {
   const items = [
     ['Пользователей', stats.users], ['Администраторов', stats.admins], ['Привычек', stats.habits],
     ['Отметок привычек', stats.habit_logs], ['Задач', stats.tasks], ['Карточек в дневниках', stats.diary_cards],
-    ['Шаблонов в каталоге', stats.templates],
+    ['Шаблонов в каталоге', stats.templates], ['Шаблонов таймера', stats.timer_presets], ['Загруженных звуков', stats.timer_sounds],
   ]
   return (
     <div className="grid grid-stats">
@@ -201,6 +203,130 @@ function Templates() {
       {deleting && (
         <ConfirmDialog title="Удалить шаблон?" onConfirm={remove} onCancel={() => setDeleting(null)}>
           <p>Шаблон «{deleting.title}» исчезнет из каталога. Привычки, которые пользователи уже добавили себе, останутся.</p>
+        </ConfirmDialog>
+      )}
+    </>
+  )
+}
+
+const MAX_SOUND_SECONDS = 10
+const MAX_SOUND_KB = 1024
+
+// Длительность аудиофайла измеряет браузер (для WAV сервер проверяет её сам)
+function audioDuration(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file)
+    const el = new Audio()
+    el.preload = 'metadata'
+    el.onloadedmetadata = () => { URL.revokeObjectURL(url); resolve(el.duration) }
+    el.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Браузер не может прочитать этот файл')) }
+    el.src = url
+  })
+}
+
+function Sounds() {
+  const fileRef = useRef(null)
+  const [sounds, setSounds] = useState([])
+  const [name, setName] = useState('')
+  const [file, setFile] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const [deleting, setDeleting] = useState(null)
+  const [message, setMessage] = useState(null)
+
+  const load = useCallback(() => api('/admin/sounds').then(setSounds).catch((e) => setMessage({ type: 'error', text: e.message })), [])
+  useEffect(() => { load() }, [load])
+
+  const pick = async (e) => {
+    const f = e.target.files[0]
+    e.target.value = ''
+    if (!f) return
+    try {
+      if (f.size > MAX_SOUND_KB * 1024) throw new Error(`Файл больше ${MAX_SOUND_KB} КБ`)
+      const duration = await audioDuration(f)
+      if (!(duration > 0)) throw new Error('Не удалось определить длительность')
+      if (duration > MAX_SOUND_SECONDS) throw new Error(`Звук длится ${duration.toFixed(1)} с — допускается до ${MAX_SOUND_SECONDS} секунд`)
+      setFile({ file: f, duration })
+      if (!name) setName(f.name.replace(/\.[^.]+$/, '').slice(0, 40))
+      setMessage(null)
+    } catch (err) {
+      setFile(null)
+      setMessage({ type: 'error', text: err.message })
+    }
+  }
+
+  const upload = async (e) => {
+    e.preventDefault()
+    setBusy(true)
+    try {
+      const form = new FormData()
+      form.append('file', file.file)
+      form.append('name', name.trim())
+      form.append('duration_ms', String(Math.round(file.duration * 1000)))
+      await api('/admin/sounds', { method: 'POST', form })
+      setFile(null)
+      setName('')
+      setMessage({ type: 'success', text: 'Звук загружен — теперь его можно выбрать в любом шаблоне таймера' })
+      load()
+    } catch (err) {
+      setMessage({ type: 'error', text: err.message })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const remove = async () => {
+    try {
+      await api(`/admin/sounds/${deleting.id}`, { method: 'DELETE' })
+      setDeleting(null)
+      load()
+    } catch (e) { setMessage({ type: 'error', text: e.message }) }
+  }
+
+  return (
+    <>
+      <form className="card stack" onSubmit={upload}>
+        <h2>Загрузить звук</h2>
+        <p className="small muted">
+          Звук будет доступен всем пользователям при выборе сигнала начала и окончания шага.
+          Длительность — до {MAX_SOUND_SECONDS} секунд, размер — до {MAX_SOUND_KB} КБ; форматы MP3, WAV, OGG, WEBM, M4A.
+          Три стандартных звука («Колокольчик», «Сигнал», «Гонг») встроены в приложение.
+        </p>
+        {message && <div className={`alert alert-${message.type}`}>{message.text}</div>}
+        <div className="form-row">
+          <div className="field">
+            <label>Файл</label>
+            <button type="button" className="btn" onClick={() => fileRef.current.click()}>
+              🎵 {file ? `${file.file.name} · ${file.duration.toFixed(1)} с` : 'Выбрать аудио'}
+            </button>
+            <input ref={fileRef} type="file" accept="audio/*" hidden onChange={pick} />
+          </div>
+          <div className="field grow">
+            <label>Название</label>
+            <input className="input" maxLength={40} value={name} onChange={(e) => setName(e.target.value)} placeholder="Например: Свисток" />
+          </div>
+          <button className="btn btn-primary" disabled={!file || !name.trim() || busy}>{busy ? 'Загрузка…' : 'Загрузить'}</button>
+        </div>
+      </form>
+
+      <section className="card">
+        {sounds.length === 0 && <div className="empty">Загруженных звуков пока нет</div>}
+        <div className="list">
+          {sounds.map((s) => (
+            <div key={s.id} className="list-item">
+              <button className="btn btn-icon" title="Прослушать" onClick={() => playSound(`custom:${s.id}`, 0.8)}>▶</button>
+              <div className="content">
+                <div className="title">{s.name}</div>
+                <div className="small muted">{(s.duration_ms / 1000).toFixed(1)} с · {Math.round(s.size / 1024)} КБ · {s.content_type}</div>
+              </div>
+              <button className="btn btn-ghost btn-icon" title="Удалить" onClick={() => setDeleting(s)}>🗑️</button>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {deleting && (
+        <ConfirmDialog title="Удалить звук?" onConfirm={remove} onCancel={() => setDeleting(null)}>
+          <p>Звук <b>{deleting.name}</b> будет удалён. В шаблонах, где он выбран, будет использоваться стандартный звук.</p>
         </ConfirmDialog>
       )}
     </>

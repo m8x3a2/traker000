@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { api, getToken, setToken, setUnauthorizedHandler } from './api'
+import { api, getToken, logoutRequest, setTokens, setUnauthorizedHandler } from './api'
 import { applyTheme, loadLocalTheme, saveLocalTheme } from './theme'
 import Login from './pages/Login'
 import Register from './pages/Register'
@@ -11,6 +11,10 @@ import Notes from './pages/Notes'
 import Catalog from './pages/Catalog'
 import Settings from './pages/Settings'
 import Admin from './pages/Admin'
+import Focus from './pages/Focus'
+import TimerWidget from './components/TimerWidget'
+import { currentStep, formatTime, remaining } from './timer/engine'
+import { useTimer } from './timer/store'
 
 // auth: только для вошедших, admin: только для администраторов
 const NAV = [
@@ -19,12 +23,13 @@ const NAV = [
   { id: 'tasks', label: 'Задачи', icon: '✅', auth: true },
   { id: 'week', label: 'Дневник', icon: '📅', auth: true },
   { id: 'notes', label: 'Заметки', icon: '📝', auth: true },
+  { id: 'focus', label: 'Фокус', icon: '⏱️' },
   { id: 'catalog', label: 'Каталог', icon: '📚' },
   { id: 'settings', label: 'Настройки', icon: '⚙️' },
   { id: 'admin', label: 'Админ', icon: '🛡️', auth: true, admin: true },
 ]
 
-const PAGES = { today: Today, habits: Habits, tasks: Tasks, week: Week, notes: Notes, catalog: Catalog, settings: Settings, admin: Admin }
+const PAGES = { today: Today, habits: Habits, tasks: Tasks, week: Week, notes: Notes, focus: Focus, catalog: Catalog, settings: Settings, admin: Admin }
 
 const readRoute = () => window.location.hash.replace(/^#\/?/, '')
 const navigate = (id) => { window.location.hash = '/' + id }
@@ -43,7 +48,7 @@ export default function App() {
   }, [])
 
   const logout = useCallback(() => {
-    setToken(null)
+    logoutRequest()
     setUser(null)
     navigate('login')
   }, [])
@@ -67,13 +72,13 @@ export default function App() {
     applyTheme(local.theme, local.custom_colors)
     if (getToken()) {
       loadUser()
-        .catch(() => setToken(null))
+        .catch(() => setTokens(null))
         .finally(() => setLoading(false))
     }
   }, [loadUser])
 
-  const handleLogin = async (token) => {
-    setToken(token)
+  const handleLogin = async (tokens) => {
+    setTokens(tokens)
     await loadUser()
     navigate('today')
   }
@@ -120,6 +125,7 @@ export default function App() {
             >
               <span className="nav-icon">{n.icon}</span>
               <span className="nav-label">{n.label}</span>
+              {n.id === 'focus' && <NavTimer />}
             </button>
           ))}
         </nav>
@@ -144,8 +150,18 @@ export default function App() {
         </div>
       </aside>
       <main className="main">{content}</main>
+      {page !== 'focus' && <TimerWidget onOpen={() => navigate('focus')} />}
     </div>
   )
+}
+
+// Оставшееся время запущенного таймера рядом с пунктом меню «Фокус»
+function NavTimer() {
+  const { state, now } = useTimer()
+  if (!state || state.phase === 'finished') return null
+  const step = currentStep(state)
+  const text = state.phase === 'waiting' ? 'ОК?' : state.phase === 'paused' ? '⏸' : formatTime(remaining(state, now))
+  return <span className="nav-timer" style={{ background: step.color }}>{text}</span>
 }
 
 function AuthRequired() {
@@ -154,7 +170,7 @@ function AuthRequired() {
       <div className="card empty stack" style={{ alignItems: 'center' }}>
         <div style={{ fontSize: 40 }}>🔒</div>
         <h2>Нужно войти</h2>
-        <p>Этот раздел доступен после входа. Гостям доступны каталог привычек и настройки темы.</p>
+        <p>Этот раздел доступен после входа. Гостям доступны каталог привычек, фокус-таймер и настройки темы.</p>
         <div className="row">
           <button className="btn btn-primary" onClick={() => navigate('login')}>Войти</button>
           <button className="btn" onClick={() => navigate('register')}>Создать аккаунт</button>

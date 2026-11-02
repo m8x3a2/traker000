@@ -6,6 +6,10 @@
 - **Задачи** — сроки, приоритеты, теги, фильтры, свой порядок перетаскиванием.
 - **Дневник** — неделя (Пн–Вс), где в каждом дне видны задачи и записи-карточки с описанием; всё перетаскивается мышкой между днями, есть колонка «Без срока».
 - **Заметки** — **одна** заметка-«плашка» вместо сотни разрозненных.
+- **Фокус-таймер** — интервальный таймер: блоки работы/отдыха, круги, перерыв между кругами, шаблоны.
+  Звук начала и окончания шага (3 стандартных + свои звуки администратора до 10 секунд), озвучка шагов и кругов голосом,
+  «Отложить на 10 минут», выбор: продолжать автоматически через N секунд после сигнала или ждать нажатия «ОК».
+  Таймер виден на всех страницах (плавающий виджет, переключатель — по умолчанию включён) и переживает перезагрузку вкладки.
 - Тёмная (по умолчанию), светлая и своя тема, экспорт и импорт данных, административная панель.
 
 Архитектура: **монолитный бэкенд с REST API** (FastAPI) + **SPA-фронтенд** (React) + **PostgreSQL**.
@@ -19,7 +23,11 @@
 | Backend | Python 3.10+ (проверено на 3.14), FastAPI, SQLAlchemy (ORM) |
 | База данных | PostgreSQL |
 | Frontend | React 18 + Vite, чистый CSS (без UI-библиотек) |
-| Аутентификация | JWT-токены (python-jose, HS256, 60 минут), bcrypt (passlib) |
+| Аутентификация | JWT access-токен (30 минут) + одноразовый refresh-токен (14 дней, ротация), bcrypt |
+| Миграции | Alembic |
+| Тесты | pytest (модульные + интеграционные), Vitest (фронтенд), Locust (нагрузка) |
+| Мониторинг | Prometheus-метрики (`/metrics`), Grafana, JSON-логи с `X-Request-ID` |
+| Развёртывание | Docker Compose, nginx, GitHub Actions (CI/CD, GHCR) |
 | Валидация | Pydantic v2 |
 
 ---
@@ -28,9 +36,9 @@
 
 | Роль | Возможности |
 |------|-------------|
-| **Гость** (`guest`, без входа) | Главная страница с описанием, просмотр каталога привычек, смена темы (сохраняется в браузере) |
+| **Гость** (`guest`, без входа) | Главная страница с описанием, просмотр каталога привычек, фокус-таймер со стандартными шаблонами, смена темы (сохраняется в браузере) |
 | **Клиент** (`client`, по умолчанию) | Всё, что гостю + свои привычки, задачи, теги, дневник, заметка, статистика, тема в аккаунте, экспорт/импорт |
-| **Администратор** (`admin`) | Всё, что клиенту + статистика системы, управление пользователями и их ролями, управление каталогом привычек |
+| **Администратор** (`admin`) | Всё, что клиенту + статистика системы, управление пользователями и их ролями, каталогом привычек и звуками таймера |
 
 Новый пользователь регистрируется как `client`. Стать `admin` можно через SQL (см. ниже) или если другой администратор повысит роль в админ-панели.
 
@@ -41,7 +49,16 @@
 ```
 traker000/
 ├── backend/
-│   ├── main.py              # Точка входа FastAPI, CORS, подключение роутеров, наполнение каталога
+│   ├── main.py              # Точка входа FastAPI: middleware, роутеры, миграции, /health, /metrics
+│   ├── config.py            # Настройки из переменных окружения
+│   ├── docs.py              # Описание API для Swagger: группы, типовые ошибки
+│   ├── security.py          # Ограничение частоты запросов, заголовки безопасности
+│   ├── cache.py             # TTL-кэш в памяти, ETag / 304
+│   ├── observability.py     # JSON-логи, X-Request-ID, сбор метрик
+│   ├── metrics.py           # Метрики Prometheus
+│   ├── alembic.ini, migrations/  # Миграции схемы БД (0001 — исходная схема, 0002 — таймер и токены)
+│   ├── tests/               # unit/, integration/, load/locustfile.py
+│   ├── Dockerfile
 │   ├── database.py          # Подключение к PostgreSQL
 │   ├── models.py            # SQLAlchemy модели (ORM)
 │   ├── schemas.py           # Pydantic схемы валидации
@@ -57,6 +74,8 @@ traker000/
 │       ├── tasks.py         # /tasks
 │       ├── tags.py          # /tags
 │       ├── diary.py         # /diary, /diary/{id}/move
+│       ├── timers.py        # /timers — шаблоны таймера
+│       ├── sounds.py        # /sounds, /admin/sounds — звуки таймера
 │       ├── stats.py         # /stats
 │       ├── data.py          # /export, /import
 │       └── admin.py         # /admin/...
@@ -69,18 +88,22 @@ traker000/
         ├── App.jsx          # Боковое меню, навигация, состояние авторизации
         ├── api.js           # fetch-обёртка: токен, ошибки, 401 → выход
         ├── theme.js         # Тёмная/светлая/своя тема через CSS-переменные
+        ├── timer/           # engine.js (логика + тесты), store.js (состояние), sounds.js (звуки, озвучка)
         ├── dates.js         # Работа с датами и неделями
         ├── styles.css
         ├── components/
         │   ├── Modal.jsx    # Модальное окно и диалог подтверждения
         │   ├── TaskEditor.jsx # Окно задачи (общее для «Задач» и «Дневника»)
-        │   └── IconPicker.jsx # Выбор иконки привычки
+        │   ├── IconPicker.jsx # Выбор иконки привычки
+        │   ├── TimerWidget.jsx # Плавающий таймер на всех страницах
+        │   └── PresetEditor.jsx # Редактор шаблона таймера
         └── pages/
             ├── Today.jsx    # «Сегодня»: статистика, привычки и задачи дня, быстрая запись в дневник
             ├── Habits.jsx   # Привычки: сетка по дням недели
             ├── Tasks.jsx    # Задачи, фильтры, теги
             ├── Week.jsx     # Дневник: неделя, задачи и записи по дням, «Без срока», drag & drop, поиск
             ├── Notes.jsx    # Одна заметка с автосохранением
+            ├── Focus.jsx    # Фокус-таймер: быстрый старт, шаблоны, настройки
             ├── Catalog.jsx  # Каталог привычек (+ приветствие для гостя)
             ├── Settings.jsx # Тема, экспорт/импорт
             ├── Admin.jsx    # Админ-панель
@@ -90,7 +113,19 @@ traker000/
 
 ---
 
-## Установка и запуск
+## Быстрый запуск в Docker
+
+```bash
+cp .env.example .env          # задайте пароли и SECRET_KEY
+docker compose up -d --build  # приложение: http://localhost, API: http://localhost/api/docs
+docker compose --profile monitoring up -d   # + Prometheus (:9090) и Grafana (:3000)
+```
+
+HTTPS: положите сертификат в `deploy/certs/fullchain.pem` и `deploy/certs/privkey.pem`
+(для проверки — самоподписанный: `openssl req -x509 -nodes -newkey rsa:2048 -days 365 -subj "/CN=localhost" -keyout deploy/certs/privkey.pem -out deploy/certs/fullchain.pem`) и запустите
+`docker compose -f docker-compose.yml -f docker-compose.https.yml up -d --build`.
+
+## Установка и запуск (для разработки)
 
 ### Требования
 
@@ -139,7 +174,9 @@ uvicorn main:app --reload
 - Swagger: `http://localhost:8000/docs` (кнопка **Authorize** — вставьте токен из `/login`)
 - ReDoc: `http://localhost:8000/redoc`
 
-> Таблицы создаются автоматически при первом запуске (`Base.metadata.create_all`), каталог привычек заполняется 8 стандартными шаблонами.
+> При запуске применяются миграции Alembic (`alembic upgrade head`), каталог привычек заполняется 8 стандартными шаблонами.
+> База, созданная прошлой версией через `create_all`, распознаётся автоматически: помечается ревизией `0001` и обновляется.
+> Без PostgreSQL можно запустить на SQLite: `DATABASE_URL=sqlite:///./dev.db uvicorn main:app --reload`.
 
 > Если PowerShell не даёт активировать venv: `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
 
@@ -156,6 +193,34 @@ npm run dev
 - Фронтенд: `http://localhost:5173`
 
 ---
+
+## Тесты
+
+```bash
+cd backend
+pip install -r requirements-dev.txt
+pytest --cov=.                 # модульные + интеграционные (SQLite; в CI — PostgreSQL)
+ruff check .                   # линтер
+locust -f tests/load/locustfile.py --host http://localhost:8000   # нагрузочный тест (RATE_LIMIT_ENABLED=0)
+
+cd ../frontend
+npm test                       # Vitest: логика таймера
+```
+
+## CI/CD
+
+- `.github/workflows/ci.yml` — на каждый push и PR: ruff, pytest на PostgreSQL с покрытием, проверка миграций
+  (`alembic upgrade/check/downgrade`), Vitest, сборка фронтенда, сборка Docker-образов и smoke-тест всего стека.
+- `.github/workflows/cd.yml` — после успешного CI в `main` (или по тегу `v*`): публикация образов в GitHub Container Registry
+  и, если заданы секреты `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY`, обновление контейнеров на сервере по SSH.
+
+## Мониторинг и логи
+
+- `GET /health` — процесс жив, `GET /health/ready` — готовность с проверкой БД (503, если БД недоступна).
+- `GET /metrics` — метрики Prometheus: запросы по маршрутам и кодам, время ответа (гистограмма), ошибки, 429, кэш, входы.
+  Снаружи через nginx закрыт.
+- Логи — JSON в stdout (`LOG_FORMAT=json`), у каждой записи `request_id`; тот же идентификатор возвращается в заголовке `X-Request-ID`.
+- `monitoring/` — конфигурация Prometheus с правилами оповещений и готовый дашборд Grafana.
 
 ## Создание первого администратора
 
@@ -204,6 +269,16 @@ task_tags              (many-to-many: tasks ↔ tags)
 
 diary_cards            (one-to-many: users → diary_cards)
   id, user_id → users.id, date, position, title, text, color, created_at, updated_at
+
+timer_presets          (one-to-many: users → timer_presets)
+  id, user_id → users.id, title, blocks (JSON), break_seconds, rounds, sound_start, sound_end,
+  auto_continue, auto_delay, voice, position, created_at
+
+timer_sounds           (звуки, загруженные администратором)
+  id, name, content_type, data (bytea), size, duration_ms, uploaded_by → users.id (SET NULL), created_at
+
+refresh_tokens         (one-to-many: users → refresh_tokens)
+  id, user_id → users.id, token_hash (SHA-256, unique), expires_at, revoked, created_at
 ```
 
 ### Важные детали
@@ -214,7 +289,7 @@ diary_cards            (one-to-many: users → diary_cards)
 - **Сортировка задач**: по дате добавления (новые сверху, по умолчанию), по сроку (задачи без срока — в конце, по дате добавления) или «свой порядок» (поле `position`, меняется перетаскиванием; новые задачи встают в начало). Выполненные всегда ниже невыполненных.
 - **Задачи в дневнике** — показываются в дне, на который назначен срок. Перетаскивание в другой день меняет срок, в колонку «Без срока» — убирает его.
 - **Архив привычек** — привычка скрывается из списка, но история отметок сохраняется.
-- **Миграция**: при запуске `main.py` проверяет, есть ли в `tasks` колонка `position`, и добавляет её в уже существующую БД (`create_all` новые колонки в существующие таблицы не добавляет).
+- **Миграции**: схема БД меняется только миграциями Alembic (`backend/migrations/versions`). Новая миграция: `alembic revision --autogenerate -m "описание"`, применение — `alembic upgrade head`, откат — `alembic downgrade -1`.
 - Даты передаются в формате `YYYY-MM-DD` по локальному времени пользователя (параметр `today` в `/habits` и `/stats`).
 
 ---
@@ -226,8 +301,13 @@ diary_cards            (one-to-many: users → diary_cards)
 | Метод | URL | Описание |
 |-------|-----|----------|
 | `POST` | `/register` | Регистрация (роль `client`) |
-| `POST` | `/login` | Вход, возвращает JWT-токен |
-| `GET` | `/templates` | Каталог привычек (`search=`, `category=`) |
+| `POST` | `/login` | Вход, возвращает `access_token` и `refresh_token` |
+| `POST` | `/refresh` | Новая пара токенов по refresh-токену (старый отзывается) |
+| `POST` | `/logout` | Отозвать refresh-токен |
+| `GET` | `/templates` | Каталог привычек (`search=`, `category=`), кэш + ETag |
+| `GET` | `/sounds` | Звуки таймера: 3 стандартных + загруженные |
+| `GET` | `/sounds/{id}/file` | Аудиофайл звука |
+| `GET` | `/health`, `/health/ready`, `/metrics` | Мониторинг |
 
 ### Клиент (требуется токен)
 
@@ -252,6 +332,9 @@ diary_cards            (one-to-many: users → diary_cards)
 | `POST` | `/diary` | Новая карточка `{ "date", "title", "text", "color" }` (в конец дня) |
 | `GET` / `PUT` / `DELETE` | `/diary/{id}` | Получить / изменить / удалить карточку |
 | `PUT` | `/diary/{id}/move` | Перетаскивание: `{ "date": "2026-09-30", "position": 0 }` |
+| `GET` / `POST` | `/timers` | Шаблоны таймера (при первом запросе копируются стандартные) |
+| `PUT` / `DELETE` | `/timers/{id}` | Изменить / удалить шаблон |
+| `POST` | `/timers/defaults` | Вернуть стандартные шаблоны |
 | `GET` | `/stats` | Личная статистика (`today=`) |
 | `GET` | `/export` | Все данные пользователя в JSON |
 | `POST` | `/import` | Импорт из JSON — **заменяет** все текущие данные |
@@ -266,8 +349,12 @@ diary_cards            (one-to-many: users → diary_cards)
 | `DELETE` | `/admin/users/{id}` | Удалить пользователя со всеми данными, себя — нельзя |
 | `POST` | `/admin/templates` | Добавить шаблон в каталог |
 | `PUT` / `DELETE` | `/admin/templates/{id}` | Изменить / удалить шаблон |
+| `GET` / `POST` | `/admin/sounds` | Звуки таймера; загрузка — `multipart/form-data` (`file`, `name`, `duration_ms`), до 10 с и 1 МБ |
+| `DELETE` | `/admin/sounds/{id}` | Удалить звук (шаблоны переключаются на стандартный) |
 
-Коды ответов: `200` / `201` — успех, `204` — удалено, `400` — ошибка бизнес-логики, `401` — нет или истёк токен, `403` — нет прав, `404` — не найдено, `422` — ошибка валидации.
+Коды ответов: `200` / `201` — успех, `204` — удалено, `304` — не изменилось (ETag), `400` — ошибка бизнес-логики, `401` — нет или истёк токен, `403` — нет прав, `404` — не найдено, `413`/`415` — файл слишком большой / не тот тип, `422` — ошибка валидации, `429` — слишком много запросов.
+
+Полная спецификация — `docs/openapi.json` (обновляется командой `python scripts/export_openapi.py` из папки `backend`).
 
 ---
 
@@ -290,12 +377,15 @@ diary_cards            (one-to-many: users → diary_cards)
 | Заметка | до 20 000 символов |
 | Своя тема | обязательны все 6 цветов: `bg, surface, border, text, muted, accent` |
 | Период запросов (`start`–`end`) | не больше 366 дней |
+| Шаблон таймера | название 1–40 символов, 1–20 блоков по 1 с – 600 мин 59 с, круги 1–99, перерыв 0–3600 с, автозапуск через 0–60 с, до 50 шаблонов |
+| Звук таймера | MP3/WAV/OGG/WEBM/M4A, до 10 секунд и 1 МБ |
+| Частота запросов | `/login`, `/register`, `/refresh` — 10 в минуту с IP, остальные — 600 в минуту |
 
 ---
 
 ## Экспорт и импорт
 
-- **Настройки → Экспорт в JSON** скачивает файл `traker000-ГГГГ-ММ-ДД.json`: привычки с отметками, задачи, теги, дневник, заметку и тему.
+- **Настройки → Экспорт в JSON** скачивает файл `traker000-ГГГГ-ММ-ДД.json`: привычки с отметками, задачи, теги, дневник, заметку, шаблоны таймера и тему.
 - **Импорт** показывает предупреждение и количество записей в файле. После подтверждения все текущие данные пользователя **заменяются** данными из файла. Файл сначала проверяется целиком (Pydantic), поэтому при ошибке данные не меняются.
 - Принимаются и файлы старой версии: записи дневника без заголовка превращаются в карточки.
 
@@ -314,7 +404,7 @@ UPDATE users SET role = 'client' WHERE username = 'логин';
 SELECT id, username, role, created_at FROM users;
 
 -- Очистить ВСЕ данные
-TRUNCATE task_tags, tasks, tags, habit_logs, habits, diary_cards, notes, user_settings, users, habit_templates RESTART IDENTITY CASCADE;
+TRUNCATE refresh_tokens, timer_presets, timer_sounds, task_tags, tasks, tags, habit_logs, habits, diary_cards, notes, user_settings, users, habit_templates RESTART IDENTITY CASCADE;
 
 -- Удалить все данные пользователей, но оставить аккаунты и каталог
 TRUNCATE task_tags, tasks, tags, habit_logs, habits, diary_cards RESTART IDENTITY CASCADE;
