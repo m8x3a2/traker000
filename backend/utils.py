@@ -11,10 +11,14 @@ def calc_streak(dates: set[dt.date], today: dt.date) -> int:
     Если сегодня ещё не отмечено, серия считается от вчерашнего дня —
     чтобы утром она не «сгорала» раньше времени.
     """
+    if today not in dates and today == dt.date.min:
+        return 0
     day = today if today in dates else today - dt.timedelta(days=1)
     streak = 0
     while day in dates:
         streak += 1
+        if day == dt.date.min:
+            break
         day -= dt.timedelta(days=1)
     return streak
 

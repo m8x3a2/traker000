@@ -65,6 +65,7 @@ def test_openapi_documents_errors_and_tags(client):
     login = spec["paths"]["/login"]["post"]
     assert {"401", "422", "429"} <= set(login["responses"])
     assert spec["paths"]["/timers"]["get"]["summary"] == "Мои шаблоны таймера"
+    assert spec["paths"]["/stats/dashboard"]["get"]["security"] == [{"HTTPBearer": []}]
 
 
 def test_alembic_migrations_up_and_down(client):

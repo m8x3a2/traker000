@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 import models
 import schemas
-from config import AUTO_MIGRATE, CORS_ORIGINS, SECRET_KEY
+from config import AUTO_MIGRATE, CORS_ORIGINS, ROOT_PATH, SECRET_KEY
 from database import Base, SessionLocal, engine, get_db
 from docs import DESCRIPTION, OPENAPI_TAGS
 from metrics import TIMER_PRESETS_TOTAL, USERS_TOTAL
@@ -91,6 +91,7 @@ app = FastAPI(
     title="Traker000 API",
     description=DESCRIPTION,
     version=VERSION,
+    root_path=ROOT_PATH,
     openapi_tags=OPENAPI_TAGS,
     contact={"name": "Команда Traker000, ЭФБО-17-24", "url": "https://github.com/m8x3a2/traker000"},
     lifespan=lifespan,

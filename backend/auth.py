@@ -6,6 +6,7 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 from passlib.context import CryptContext
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 import models
@@ -50,18 +51,24 @@ def use_refresh_token(db: Session, token: str) -> models.User:
     """Проверяет refresh-токен и отзывает его (ротация: каждый токен одноразовый).
     Повторное предъявление отозванного токена — признак кражи: отзываются все токены пользователя."""
     invalid = HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Сессия истекла, войдите заново")
-    row = db.query(models.RefreshToken).filter(models.RefreshToken.token_hash == hash_refresh_token(token)).first()
-    if row is None:
-        raise invalid
-    if row.revoked:
-        revoke_all_refresh_tokens(db, row.user_id)
+    refresh = models.RefreshToken
+    token_hash = hash_refresh_token(token)
+    user_id = db.execute(
+        update(refresh)
+        .where(refresh.token_hash == token_hash, refresh.revoked.is_(False),
+               refresh.expires_at >= datetime.now(timezone.utc))
+        .values(revoked=True)
+        .returning(refresh.user_id)
+    ).scalar_one_or_none()
+    if user_id is not None:
+        return db.get(models.User, user_id)
+    revoked_user_id = db.query(refresh.user_id).filter(
+        refresh.token_hash == token_hash, refresh.revoked.is_(True)
+    ).scalar()
+    if revoked_user_id is not None:
+        revoke_all_refresh_tokens(db, revoked_user_id)
         db.commit()
-        raise invalid
-    expires_at = row.expires_at if row.expires_at.tzinfo else row.expires_at.replace(tzinfo=timezone.utc)
-    if expires_at < datetime.now(timezone.utc):
-        raise invalid
-    row.revoked = True
-    return row.user
+    raise invalid
 
 
 def revoke_all_refresh_tokens(db: Session, user_id: int) -> None:

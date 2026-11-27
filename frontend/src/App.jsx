@@ -8,10 +8,10 @@ import Habits from './pages/Habits'
 import Tasks from './pages/Tasks'
 import Week from './pages/Week'
 import Notes from './pages/Notes'
+import Focus from './pages/Focus'
 import Catalog from './pages/Catalog'
 import Settings from './pages/Settings'
 import Admin from './pages/Admin'
-import Focus from './pages/Focus'
 import TimerWidget from './components/TimerWidget'
 import { currentStep, formatTime, remaining } from './timer/engine'
 import { useTimer } from './timer/store'
@@ -36,10 +36,20 @@ const navigate = (id) => { window.location.hash = '/' + id }
 
 const ROLE_LABELS = { guest: 'Гость', client: 'Клиент', admin: 'Админ' }
 
+const SIDEBAR_KEY = 'traker_sidebar_collapsed'
+const readCollapsed = () => {
+  try { return localStorage.getItem(SIDEBAR_KEY) === '1' } catch { return false }
+}
+
 export default function App() {
   const [user, setUser] = useState(null)
   const [loading, setLoading] = useState(Boolean(getToken()))
   const [route, setRoute] = useState(readRoute())
+  const [collapsed, setCollapsed] = useState(readCollapsed) // меню свёрнуто до иконок
+
+  useEffect(() => {
+    try { localStorage.setItem(SIDEBAR_KEY, collapsed ? '1' : '0') } catch { /* не критично */ }
+  }, [collapsed])
 
   useEffect(() => {
     const onHash = () => setRoute(readRoute())
@@ -109,11 +119,11 @@ export default function App() {
   }
 
   return (
-    <div className="app">
+    <div className={`app ${collapsed ? 'collapsed' : ''}`}>
       <aside className="sidebar">
         <div className="brand">
           <span className="brand-logo">✓</span>
-          <span>Traker000</span>
+          <span className="brand-name">Traker000</span>
         </div>
         <nav className="nav">
           {navItems.map((n) => (
@@ -122,6 +132,8 @@ export default function App() {
               className={`nav-item ${page === n.id ? 'active' : ''}`}
               onClick={() => navigate(n.id)}
               title={n.label}
+              aria-label={n.label}
+              aria-current={page === n.id ? 'page' : undefined}
             >
               <span className="nav-icon">{n.icon}</span>
               <span className="nav-label">{n.label}</span>
@@ -129,22 +141,39 @@ export default function App() {
             </button>
           ))}
         </nav>
+        <button
+          className="nav-item sidebar-toggle"
+          onClick={() => setCollapsed(!collapsed)}
+          title={collapsed ? 'Развернуть меню' : 'Свернуть меню'}
+          aria-label={collapsed ? 'Развернуть меню' : 'Свернуть меню'}
+          aria-expanded={!collapsed}
+        >
+          <span className="nav-icon"><Icon path={collapsed ? 'M9 6l6 6-6 6' : 'M15 6l-6 6 6 6'} /></span>
+          <span className="nav-label">Свернуть меню</span>
+        </button>
         <div className="sidebar-footer">
           {user ? (
             <>
               <div className="user-line">
-                <span className="user-name">{user.username}</span>
-                <span className={`badge ${role === 'admin' ? 'badge-accent' : ''}`}>{ROLE_LABELS[role]}</span>
+                <span className="user-avatar" title={`${user.username} · ${ROLE_LABELS[role]}`}>{user.username[0].toUpperCase()}</span>
+                <span className="user-name hide-collapsed">{user.username}</span>
+                <span className={`badge hide-collapsed ${role === 'admin' ? 'badge-accent' : ''}`}>{ROLE_LABELS[role]}</span>
               </div>
-              <button className="btn btn-sm" onClick={logout}>Выйти</button>
+              <button className="nav-item footer-btn" onClick={logout} title="Выйти">
+                <span className="nav-icon"><Icon path="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3M10 17l-5-5 5-5M5 12h11" /></span>
+                <span className="nav-label">Выйти</span>
+              </button>
             </>
           ) : (
             <>
               <span className="muted small nav-label">Вы вошли как гость</span>
-              <div className="row">
+              <div className="row hide-collapsed">
                 <button className="btn btn-sm btn-primary" onClick={() => navigate('login')}>Войти</button>
                 <button className="btn btn-sm" onClick={() => navigate('register')}>Регистрация</button>
               </div>
+              <button className="nav-item footer-btn show-collapsed" onClick={() => navigate('login')} title="Войти">
+                <span className="nav-icon"><Icon path="M9 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h3M14 7l5 5-5 5M19 12H8" /></span>
+              </button>
             </>
           )}
         </div>
@@ -162,6 +191,15 @@ function NavTimer() {
   const step = currentStep(state)
   const text = state.phase === 'waiting' ? 'ОК?' : state.phase === 'paused' ? '⏸' : formatTime(remaining(state, now))
   return <span className="nav-timer" style={{ background: step.color }}>{text}</span>
+}
+
+// Простая линейная иконка 24×24 (цвет — от текста)
+function Icon({ path }) {
+  return (
+    <svg className="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d={path} />
+    </svg>
+  )
 }
 
 function AuthRequired() {

@@ -45,7 +45,7 @@ def export_data(user: models.User = Depends(get_current_user)):
         ],
         diary=[
             schemas.ExportDiary(date=c.date, title=c.title, text=c.text, color=c.color)
-            for c in sorted(user.diary_cards, key=lambda c: (c.date, c.position, c.id))
+            for c in sorted(user.diary_cards, key=lambda c: (c.date is None, c.date or dt.date.min, c.position, c.id))
         ],
         timers=[schemas.TimerPresetIn.model_validate(p, from_attributes=True) for p in user.timer_presets],
     )

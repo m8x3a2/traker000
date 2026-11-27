@@ -1,64 +1,66 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api } from '../api'
 import { formatDate, fromISO, todayISO } from '../dates'
+import Checkbox from '../components/Checkbox'
 
 export default function Today({ user, navigate }) {
   const today = todayISO()
-  const [stats, setStats] = useState(null)
-  const [habits, setHabits] = useState([])
-  const [doneIds, setDoneIds] = useState(new Set())
-  const [tasks, setTasks] = useState([])
-  const [cards, setCards] = useState([])
+  const [dashboard, setDashboard] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
   const [newCard, setNewCard] = useState('')
   const [error, setError] = useState('')
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (signal) => {
+    setLoading(true)
+    setError('')
     try {
-      const [s, h, logs, t, diary] = await Promise.all([
-        api('/stats', { query: { today } }),
-        api('/habits', { query: { today } }),
-        api('/habits/logs', { query: { start: today, end: today } }),
-        api('/tasks', { query: { status: 'active', due_to: today, sort: 'due' } }),
-        api('/diary', { query: { start: today, end: today } }),
-      ])
-      setStats(s)
-      setHabits(h)
-      setDoneIds(new Set(logs.map((l) => l.habit_id)))
-      setTasks(t)
-      setCards(diary)
-      setError('')
+      const result = await api('/stats/dashboard', { query: { today }, signal })
+      if (!signal?.aborted) setDashboard(result)
     } catch (e) {
-      setError(e.message)
+      if (!signal?.aborted) setError(e.message)
+    } finally {
+      if (!signal?.aborted) setLoading(false)
     }
   }, [today])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => {
+    const controller = new AbortController()
+    load(controller.signal)
+    return () => controller.abort()
+  }, [load])
 
-  const toggleHabit = async (habit) => {
+  const change = async (save) => {
+    setSaving(true)
+    setError('')
     try {
-      if (doneIds.has(habit.id)) await api(`/habits/${habit.id}/logs/${today}`, { method: 'DELETE' })
-      else await api(`/habits/${habit.id}/logs`, { method: 'POST', body: { date: today } })
-      load()
-    } catch (e) { setError(e.message) }
+      await save()
+      await load()
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setSaving(false)
+    }
   }
 
-  const completeTask = async (task) => {
-    try {
-      await api(`/tasks/${task.id}`, { method: 'PATCH', body: { done: true } })
-      load()
-    } catch (e) { setError(e.message) }
-  }
+  const toggleHabit = (habit, checked) => change(() => checked
+    ? api(`/habits/${habit.id}/logs`, { method: 'POST', body: { date: today } })
+    : api(`/habits/${habit.id}/logs/${today}`, { method: 'DELETE' }))
 
-  const addCard = async (e) => {
+  const completeTask = (task) => change(() => api(`/tasks/${task.id}`, { method: 'PATCH', body: { done: true } }))
+
+  const addCard = (e) => {
     e.preventDefault()
-    if (!newCard.trim()) return
-    try {
-      const card = await api('/diary', { method: 'POST', body: { date: today, title: newCard } })
-      setCards((prev) => [...prev, card])
+    if (loading || saving || !newCard.trim()) return
+    change(async () => {
+      await api('/diary', { method: 'POST', body: { date: today, title: newCard.trim() } })
       setNewCard('')
-    } catch (err) { setError(err.message) }
+    })
   }
 
+  const { stats, habits = [], tasks = [], diary: cards = [], completed_habit_ids: completed = [] } = dashboard ?? {}
+  const doneIds = new Set(completed)
+  const busy = loading || saving
   const hour = new Date().getHours()
   const greeting = hour < 6 ? 'Доброй ночи' : hour < 12 ? 'Доброе утро' : hour < 18 ? 'Добрый день' : 'Добрый вечер'
   const habitPercent = habits.length ? Math.round((doneIds.size / habits.length) * 100) : 0
@@ -72,9 +74,15 @@ export default function Today({ user, navigate }) {
         </div>
       </div>
 
-      {error && <div className="alert alert-error">{error}</div>}
+      {busy && <div className="muted small" role="status">{saving ? 'Сохранение изменений…' : 'Загрузка сводки…'}</div>}
+      {error && (
+        <div className="alert alert-error row">
+          <span role="alert">{error}</span>
+          <button className="btn btn-sm" onClick={() => load()} disabled={busy}>Обновить сводку</button>
+        </div>
+      )}
 
-      {stats && (
+      {dashboard && <div className="stack today-content" aria-busy={busy}>
         <div className="grid grid-stats">
           <Stat value={`${stats.habits_done_today}/${stats.habits_active}`} label="Привычек сегодня" />
           <Stat value={`🔥 ${stats.best_streak}`} label="Лучшая серия, дней" />
@@ -83,7 +91,6 @@ export default function Today({ user, navigate }) {
           <Stat value={stats.tasks_overdue} label="Просрочено" danger={stats.tasks_overdue > 0} />
           <Stat value={stats.diary_cards_week} label="Записей в дневнике за 7 дней" />
         </div>
-      )}
 
       <div className="grid grid-2">
         <section className="card">
@@ -103,9 +110,7 @@ export default function Today({ user, navigate }) {
                 const done = doneIds.has(h.id)
                 return (
                   <div key={h.id} className={`list-item ${done ? 'done' : ''}`}>
-                    <button className={`checkbox ${done ? 'checked' : ''}`} onClick={() => toggleHabit(h)} aria-label="Отметить">
-                      {done && '✓'}
-                    </button>
+                    <Checkbox checked={done} color={h.color} disabled={busy} onChange={(checked) => toggleHabit(h, checked)} title={h.title} />
                     <span>{h.icon}</span>
                     <span className="content title">{h.title}</span>
                     {h.streak > 0 && <span className="badge badge-warning">🔥 {h.streak}</span>}
@@ -129,7 +134,7 @@ export default function Today({ user, navigate }) {
                 const overdue = t.due_date < today
                 return (
                   <div key={t.id} className="list-item">
-                    <button className="checkbox" onClick={() => completeTask(t)} aria-label="Выполнить" />
+                    <Checkbox checked={false} disabled={busy} onChange={() => completeTask(t)} title={`Выполнить: ${t.title}`} />
                     <span className="content title">{t.title}</span>
                     {overdue && <span className="badge badge-danger">просрочено {formatDate(fromISO(t.due_date))}</span>}
                     {t.priority === 'high' && <span className="badge badge-danger">важно</span>}
@@ -157,10 +162,11 @@ export default function Today({ user, navigate }) {
           </div>
         )}
         <form className="row" style={{ flexWrap: 'nowrap' }} onSubmit={addCard}>
-          <input className="input" placeholder="Быстрая запись: что сегодня произошло?" maxLength={100} value={newCard} onChange={(e) => setNewCard(e.target.value)} />
-          <button className="btn btn-primary" disabled={!newCard.trim()}>Добавить</button>
+          <input aria-label="Заголовок записи" className="input" placeholder="Быстрая запись" maxLength={100} value={newCard} disabled={saving} onChange={(e) => setNewCard(e.target.value)} />
+          <button className="btn btn-primary" disabled={busy || !newCard.trim()}>Добавить</button>
         </form>
       </section>
+      </div>}
     </div>
   )
 }

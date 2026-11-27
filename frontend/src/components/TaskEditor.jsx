@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { api } from '../api'
 import Modal, { ConfirmDialog } from './Modal'
+import Checkbox from './Checkbox'
+import { addDays, toISO } from '../dates'
 
 export const PRIORITIES = {
   high: { label: 'Высокий', badge: 'badge-danger' },
@@ -8,9 +10,18 @@ export const PRIORITIES = {
   low: { label: 'Низкий', badge: '' },
 }
 
+// Быстрый выбор срока одной кнопкой
+const QUICK_DATES = [
+  ['Сегодня', 0],
+  ['Завтра', 1],
+  ['Через неделю', 7],
+  ['Без срока', null],
+]
+
 // Поля задачи — используются и в форме создания, и в окне редактирования
 export function TaskFields({ value, onChange, tags, compact }) {
   const set = (patch) => onChange({ ...value, ...patch })
+  const now = new Date()
   const toggleTag = (id) =>
     set({ tag_ids: value.tag_ids.includes(id) ? value.tag_ids.filter((x) => x !== id) : [...value.tag_ids, id] })
 
@@ -31,6 +42,17 @@ export function TaskFields({ value, onChange, tags, compact }) {
             {Object.entries(PRIORITIES).map(([id, p]) => <option key={id} value={id}>{p.label}</option>)}
           </select>
         </div>
+      </div>
+      <div className="row" style={{ gap: 6 }}>
+        <span className="small muted">Срок:</span>
+        {QUICK_DATES.map(([label, days]) => {
+          const iso = days == null ? '' : toISO(addDays(now, days))
+          return (
+            <button type="button" key={label} className={`chip ${value.due_date === iso ? 'active' : ''}`} onClick={() => set({ due_date: iso })}>
+              {label}
+            </button>
+          )
+        })}
       </div>
       {!compact && (
         <div className="field">
@@ -101,10 +123,7 @@ export default function TaskEditor({ task, tags, onChanged, onClose }) {
     >
       {error && <div className="alert alert-error">{error}</div>}
       <TaskFields value={form} onChange={setForm} tags={tags} />
-      <label className="row" style={{ cursor: 'pointer' }}>
-        <input type="checkbox" checked={form.done} onChange={(e) => setForm({ ...form, done: e.target.checked })} />
-        Выполнена
-      </label>
+      <Checkbox checked={form.done} onChange={(done) => setForm({ ...form, done })} label="Выполнена" />
     </Modal>
   )
 }

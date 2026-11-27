@@ -42,10 +42,7 @@ limiter = SlidingWindowLimiter()
 
 
 def client_ip(request: Request) -> str:
-    # За nginx реальный адрес клиента приходит в X-Forwarded-For (nginx перезаписывает заголовок)
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
+    # Uvicorn учитывает адрес, переданный доверенным прокси, при формировании ASGI scope.
     return request.client.host if request.client else "unknown"
 
 
@@ -78,4 +75,5 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
         for key, value in SECURITY_HEADERS.items():
             response.headers.setdefault(key, value)
+        response.headers.setdefault("Cache-Control", "no-store")
         return response

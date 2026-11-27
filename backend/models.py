@@ -7,6 +7,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     LargeBinary,
     String,
@@ -136,6 +137,7 @@ class Tag(Base):
 
 class Task(Base):
     __tablename__ = "tasks"
+    __table_args__ = (Index("ix_tasks_user_done_due", "user_id", "done", "due_date"),)
 
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
@@ -157,10 +159,11 @@ class DiaryCard(Base):
     порядок внутри дня задаёт position (меняется перетаскиванием)."""
 
     __tablename__ = "diary_cards"
+    __table_args__ = (Index("ix_diary_cards_user_date", "user_id", "date"),)
 
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    date = Column(Date, nullable=False, index=True)
+    date = Column(Date, nullable=True, index=True)
     position = Column(Integer, nullable=False, default=0)
     title = Column(String(100), nullable=False)
     text = Column(Text, nullable=False, default="")

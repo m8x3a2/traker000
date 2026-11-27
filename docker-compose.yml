@@ -29,6 +29,7 @@ services:
       DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-traker}:${POSTGRES_PASSWORD:-traker_password}@db:5432/traker000
       SECRET_KEY: ${SECRET_KEY:-change-me-in-env-file}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost}
+      ROOT_PATH: /api
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       LOG_FORMAT: json
     depends_on:
@@ -43,7 +44,7 @@ services:
     image: ${IMAGE_PREFIX:-traker000}-frontend:${IMAGE_TAG:-latest}
     restart: unless-stopped
     ports:
-      - "${APP_PORT:-80}:80"
+      - "${APP_HOST:-0.0.0.0}:${APP_PORT:-80}:80"
     depends_on:
       backend:
         condition: service_healthy
@@ -57,7 +58,7 @@ services:
       - ./monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
       - promdata:/prometheus
     ports:
-      - "127.0.0.1:9090:9090"
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
     depends_on: [backend]
 
   grafana:
@@ -71,7 +72,7 @@ services:
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
     ports:
-      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:${GRAFANA_PORT:-3000}:3000"
     depends_on: [prometheus]
 
 volumes:
