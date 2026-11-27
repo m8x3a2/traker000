@@ -1491,8 +1491,8 @@
         "tags": [
           "Дневник"
         ],
-        "summary": "List Cards",
-        "description": "Карточки дневника за период (например, за неделю), по дням и по порядку внутри дня.",
+        "summary": "Карточки дневника",
+        "description": "Карточки дневника за период [start; end] (например, за неделю), по дням и по порядку внутри дня.\n`no_date=true` — только заметки без даты (start и end тогда не нужны).\nПри поиске (`search=`) заметки без даты тоже попадают в результат.",
         "operationId": "list_cards_diary_get",
         "security": [
           {
@@ -1503,21 +1503,45 @@
           {
             "name": "start",
             "in": "query",
-            "required": true,
+            "required": false,
             "schema": {
-              "type": "string",
-              "format": "date",
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
               "title": "Start"
             }
           },
           {
             "name": "end",
             "in": "query",
-            "required": true,
+            "required": false,
             "schema": {
-              "type": "string",
-              "format": "date",
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
               "title": "End"
+            }
+          },
+          {
+            "name": "no_date",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "No Date"
             }
           },
           {
@@ -1552,12 +1576,32 @@
               }
             }
           },
-          "422": {
-            "description": "Validation Error",
+          "400": {
+            "description": "Ошибка бизнес-логики",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Нет токена, токен истёк или недействителен",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Ошибка валидации входных данных",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
                 }
               }
             }
@@ -1569,7 +1613,7 @@
           "Дневник"
         ],
         "summary": "Create Card",
-        "description": "Новая карточка добавляется в конец дня.",
+        "description": "Новая карточка добавляется в конец дня (без `date` — в заметки «Без даты»).",
         "operationId": "create_card_diary_post",
         "security": [
           {
@@ -1756,7 +1800,7 @@
           "Дневник"
         ],
         "summary": "Move Card",
-        "description": "Перетаскивание: переносит карточку в день `date` на место `position`\nи перенумеровывает карточки в старом и новом дне.",
+        "description": "Перетаскивание: переносит карточку в день `date` (null — в «Без даты») на место `position`\nи перенумеровывает карточки в старом и новом дне.",
         "operationId": "move_card_diary__card_id__move_put",
         "security": [
           {
@@ -2177,7 +2221,7 @@
         "tags": [
           "Статистика"
         ],
-        "summary": "My Stats",
+        "summary": "Личная статистика",
         "description": "Личная статистика. `today` — дата клиента.",
         "operationId": "my_stats_stats_get",
         "security": [
@@ -2215,12 +2259,108 @@
               }
             }
           },
-          "422": {
-            "description": "Validation Error",
+          "401": {
+            "description": "Нет токена, токен истёк или недействителен",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Ошибка валидации входных данных",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Слишком много запросов — повторите позже (см. заголовок Retry-After)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/stats/dashboard": {
+      "get": {
+        "tags": [
+          "Статистика"
+        ],
+        "summary": "Сводка на день",
+        "description": "Данные страницы «Сегодня»: активные привычки, их отметки, задачи со сроком до\nуказанной даты включительно, дневник за этот день и личные счётчики.",
+        "operationId": "dashboard_stats_dashboard_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "today",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Today"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DashboardOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Нет токена, токен истёк или недействителен",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Ошибка валидации входных данных",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Слишком много запросов — повторите позже (см. заголовок Retry-After)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
                 }
               }
             }
@@ -3254,6 +3394,56 @@
         ],
         "title": "Body_upload_sound_admin_sounds_post"
       },
+      "DashboardOut": {
+        "properties": {
+          "date": {
+            "type": "string",
+            "format": "date",
+            "title": "Date"
+          },
+          "stats": {
+            "$ref": "#/components/schemas/StatsOut"
+          },
+          "habits": {
+            "items": {
+              "$ref": "#/components/schemas/HabitOut"
+            },
+            "type": "array",
+            "title": "Habits"
+          },
+          "completed_habit_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Completed Habit Ids"
+          },
+          "tasks": {
+            "items": {
+              "$ref": "#/components/schemas/TaskOut"
+            },
+            "type": "array",
+            "title": "Tasks"
+          },
+          "diary": {
+            "items": {
+              "$ref": "#/components/schemas/DiaryCardOut"
+            },
+            "type": "array",
+            "title": "Diary"
+          }
+        },
+        "type": "object",
+        "required": [
+          "date",
+          "stats",
+          "habits",
+          "completed_habit_ids",
+          "tasks",
+          "diary"
+        ],
+        "title": "DashboardOut"
+      },
       "DiaryCardIn": {
         "properties": {
           "title": {
@@ -3274,23 +3464,36 @@
             "default": "#7c5cff"
           },
           "date": {
-            "type": "string",
-            "format": "date",
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Date"
           }
         },
         "type": "object",
         "required": [
-          "title",
-          "date"
+          "title"
         ],
         "title": "DiaryCardIn"
       },
       "DiaryCardMove": {
         "properties": {
           "date": {
-            "type": "string",
-            "format": "date",
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Date"
           },
           "position": {
@@ -3305,7 +3508,7 @@
           "position"
         ],
         "title": "DiaryCardMove",
-        "description": "Перенос карточки: в какой день и на какое место (0 — в начало)."
+        "description": "Перенос карточки: дата или null для заметки без даты, позиция от 0."
       },
       "DiaryCardOut": {
         "properties": {
@@ -3331,8 +3534,15 @@
             "title": "Id"
           },
           "date": {
-            "type": "string",
-            "format": "date",
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Date"
           },
           "position": {
@@ -3528,15 +3738,21 @@
             "default": "#7c5cff"
           },
           "date": {
-            "type": "string",
-            "format": "date",
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Date"
           }
         },
         "type": "object",
         "required": [
-          "title",
-          "date"
+          "title"
         ],
         "title": "ExportDiary"
       },

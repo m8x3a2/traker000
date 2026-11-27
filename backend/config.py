@@ -20,6 +20,7 @@ ACCESS_TOKEN_EXPIRE_MINUTES = _int("ACCESS_TOKEN_EXPIRE_MINUTES", 30)
 REFRESH_TOKEN_EXPIRE_DAYS = _int("REFRESH_TOKEN_EXPIRE_DAYS", 14)
 
 CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",") if o.strip()]
+ROOT_PATH = os.getenv("ROOT_PATH", "")
 
 # Ограничение частоты запросов (запросов в минуту с одного IP)
 RATE_LIMIT_ENABLED = _bool("RATE_LIMIT_ENABLED", True)

@@ -303,7 +303,7 @@ class DiaryCardBase(BaseModel):
 
 
 class DiaryCardIn(DiaryCardBase):
-    date: dt.date
+    date: dt.date | None = None
 
 
 class DiaryCardUpdate(DiaryCardBase):
@@ -311,15 +311,15 @@ class DiaryCardUpdate(DiaryCardBase):
 
 
 class DiaryCardMove(BaseModel):
-    """Перенос карточки: в какой день и на какое место (0 — в начало)."""
+    """Перенос карточки: дата или null для заметки без даты, позиция от 0."""
 
-    date: dt.date
+    date: dt.date | None
     position: int = Field(ge=0)
 
 
 class DiaryCardOut(DiaryCardBase, ORMModel):
     id: int
-    date: dt.date
+    date: dt.date | None
     position: int
     created_at: dt.datetime | None = None
     updated_at: dt.datetime | None = None
@@ -337,6 +337,15 @@ class StatsOut(BaseModel):
     tasks_overdue: int
     diary_cards: int       # всего карточек в дневнике
     diary_cards_week: int  # карточек за последние 7 дней
+
+
+class DashboardOut(BaseModel):
+    date: dt.date
+    stats: StatsOut
+    habits: list[HabitOut]
+    completed_habit_ids: list[int]
+    tasks: list[TaskOut]
+    diary: list[DiaryCardOut]
 
 
 class AdminStatsOut(BaseModel):
@@ -442,7 +451,7 @@ class ExportTask(TaskBase):
 
 
 class ExportDiary(DiaryCardBase):
-    date: dt.date
+    date: dt.date | None = None
 
     @model_validator(mode="before")
     @classmethod

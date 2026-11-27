@@ -4,7 +4,7 @@
 
 - **Привычки** — отметки по дням недели и серии выполнения 🔥.
 - **Задачи** — сроки, приоритеты, теги, фильтры, свой порядок перетаскиванием.
-- **Дневник** — неделя (Пн–Вс), где в каждом дне видны задачи и записи-карточки с описанием; всё перетаскивается мышкой между днями, есть колонка «Без срока».
+- **Дневник** — режимы недели и дня, карточки с описанием, задачи без срока и заметки без даты. Карточки можно перетаскивать мышью между колонками.
 - **Заметки** — **одна** заметка-«плашка» вместо сотни разрозненных.
 - **Фокус-таймер** — интервальный таймер: блоки работы/отдыха, круги, перерыв между кругами, шаблоны.
   Звук начала и окончания шага (3 стандартных + свои звуки администратора до 10 секунд), озвучка шагов и кругов голосом,
@@ -56,7 +56,7 @@ traker000/
 │   ├── cache.py             # TTL-кэш в памяти, ETag / 304
 │   ├── observability.py     # JSON-логи, X-Request-ID, сбор метрик
 │   ├── metrics.py           # Метрики Prometheus
-│   ├── alembic.ini, migrations/  # Миграции схемы БД (0001 — исходная схема, 0002 — таймер и токены)
+│   ├── alembic.ini, migrations/  # 0001 — исходная схема, 0002 — таймер и токены, 0003 — дневник и индексы
 │   ├── tests/               # unit/, integration/, load/locustfile.py
 │   ├── Dockerfile
 │   ├── database.py          # Подключение к PostgreSQL
@@ -76,7 +76,7 @@ traker000/
 │       ├── diary.py         # /diary, /diary/{id}/move
 │       ├── timers.py        # /timers — шаблоны таймера
 │       ├── sounds.py        # /sounds, /admin/sounds — звуки таймера
-│       ├── stats.py         # /stats
+│       ├── stats.py         # /stats и /stats/dashboard
 │       ├── data.py          # /export, /import
 │       └── admin.py         # /admin/...
 └── frontend/
@@ -86,7 +86,7 @@ traker000/
     └── src/
         ├── main.jsx         # Точка входа React
         ├── App.jsx          # Боковое меню, навигация, состояние авторизации
-        ├── api.js           # fetch-обёртка: токен, ошибки, 401 → выход
+        ├── api.js           # fetch-обёртка: Bearer, ротация токенов, ошибки
         ├── theme.js         # Тёмная/светлая/своя тема через CSS-переменные
         ├── timer/           # engine.js (логика + тесты), store.js (состояние), sounds.js (звуки, озвучка)
         ├── dates.js         # Работа с датами и неделями
@@ -120,6 +120,11 @@ cp .env.example .env          # задайте пароли и SECRET_KEY
 docker compose up -d --build  # приложение: http://localhost, API: http://localhost/api/docs
 docker compose --profile monitoring up -d   # + Prometheus (:9090) и Grafana (:3000)
 ```
+
+Для стенда на одном компьютере задайте `APP_HOST=127.0.0.1` в `.env`. При занятых портах используйте
+`APP_PORT`, `DB_PORT`, `PROMETHEUS_PORT`, `GRAFANA_PORT`. Если HTTP-порт отличен от 80, включите его в `CORS_ORIGINS`.
+Проверки стенда: `docker compose ps`, `GET /api/health/ready`, `GET /api/openapi.json` и цель
+`traker-backend` в Prometheus. Nginx закрывает публичный доступ к `/api/metrics`.
 
 HTTPS: положите сертификат в `deploy/certs/fullchain.pem` и `deploy/certs/privkey.pem`
 (для проверки — самоподписанный: `openssl req -x509 -nodes -newkey rsa:2048 -days 365 -subj "/CN=localhost" -keyout deploy/certs/privkey.pem -out deploy/certs/fullchain.pem`) и запустите
@@ -177,8 +182,20 @@ uvicorn main:app --reload
 > При запуске применяются миграции Alembic (`alembic upgrade head`), каталог привычек заполняется 8 стандартными шаблонами.
 > База, созданная прошлой версией через `create_all`, распознаётся автоматически: помечается ревизией `0001` и обновляется.
 > Без PostgreSQL можно запустить на SQLite: `DATABASE_URL=sqlite:///./dev.db uvicorn main:app --reload`.
+> Если локальная БД содержит таблицу `timer_presets` со старой незакоммиченной структурой
+> (`name`, `gap_seconds`), для запуска этой версии используйте отдельную БД.
 
 > Если PowerShell не даёт активировать venv: `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
+
+### Сводка дня
+
+`GET /stats/dashboard?today=2026-11-27` принимает JWT Bearer и возвращает дату, личные счётчики,
+активные привычки и идентификаторы выполненных, незавершённые задачи со сроком до указанной даты
+включительно и карточки за этот день. Старые маршруты продолжают обслуживать специализированные страницы.
+Пример ответа и схемы моделей доступны в `docs/openapi.json` и Swagger UI.
+
+`GET /diary?no_date=true` возвращает заметки без даты. При создании записи без даты поле `date` можно
+опустить, а при переносе в колонку «Без даты» нужно передать `date: null`.
 
 ### 4. Запуск фронтенда
 

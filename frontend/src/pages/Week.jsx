@@ -1,10 +1,34 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api } from '../api'
-import { DAY_FULL, addDays, formatDate, fromISO, startOfWeek, toISO, todayISO, weekDates, weekLabel } from '../dates'
+import { DAY_FULL, DAY_SHORT, addDays, formatDate, fromISO, startOfWeek, toISO, todayISO, weekDates, weekLabel } from '../dates'
 import Modal, { ConfirmDialog } from '../components/Modal'
 import TaskEditor, { PRIORITIES } from '../components/TaskEditor'
+import Checkbox from '../components/Checkbox'
+import { beginDrag, indexAt } from '../dnd'
 
 export const CARD_COLORS = ['#7c5cff', '#3b82f6', '#14b8a6', '#22c55e', '#f59e0b', '#ef4444', '#ec4899', '#8b93a7']
+
+// Ключ колонки: дата или 'none' для колонки «Без даты»
+const colKey = (date) => date ?? 'none'
+
+const ITEM_SELECTOR = ':scope > [data-sort-id]'
+
+// Режим просмотра (неделя / один день) запоминается в браузере
+const VIEW_KEY = 'traker_diary_view'
+const readView = () => {
+  try { return localStorage.getItem(VIEW_KEY) === 'day' ? 'day' : 'week' } catch { return 'week' }
+}
+
+// Куда встанет перетаскиваемый элемент под курсором: { zone: 'task:2026-09-30' | 'card:none' | …, index }
+function hitTest(type, id, x, y) {
+  const el = document.elementFromPoint(x, y)
+  const list = el?.closest(`[data-zone^="${type}:"]`)
+  if (list) return { zone: list.dataset.zone, index: indexAt(list, y, ITEM_SELECTOR, id) }
+  // Курсор над колонкой, но не над списком — элемент встаёт в конец нужного списка
+  const colList = el?.closest('[data-col]')?.querySelector(`[data-zone^="${type}:"]`)
+  if (!colList) return null
+  return { zone: colList.dataset.zone, index: indexAt(colList, Infinity, ITEM_SELECTOR, id) }
+}
 
 // Вставляет item в массив рядом с соседом (before/after) — так же, как это делает сервер
 function insertNear(list, item, { before_id, after_id }) {
@@ -16,17 +40,19 @@ function insertNear(list, item, { before_id, after_id }) {
   return result
 }
 
-// Дневник: неделя (Пн–Вс). В каждом дне — задачи с этим сроком и записи-карточки.
-// Всё перетаскивается мышкой: внутри дня, между днями и в колонку «Без срока».
+// Дневник: неделя (Пн–Вс) или один день. В каждом дне — задачи с этим сроком, записи-карточки и привычки.
+// Колонка «Без даты» — задачи без срока и заметки, которые ещё не привязаны к дню.
+// Всё перетаскивается мышкой: внутри дня, между днями и в колонку «Без даты».
 export default function Week() {
   const today = todayISO()
-  const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date()))
-  const [cards, setCards] = useState([])
+  const [view, setView] = useState(readView)
+  const [day, setDay] = useState(today) // выбранный день; неделя — та, в которую он входит
+  const [cards, setCards] = useState([])     // записи недели + заметки без даты (date = null)
   const [tasks, setTasks] = useState([])     // задачи со сроком на этой неделе
   const [backlog, setBacklog] = useState([]) // активные задачи без срока
   const [tags, setTags] = useState([])
-  const [habitsCount, setHabitsCount] = useState(0)
-  const [logsByDay, setLogsByDay] = useState({})
+  const [habits, setHabits] = useState([])
+  const [habitLogs, setHabitLogs] = useState(new Set()) // «habitId|YYYY-MM-DD»
   const [loaded, setLoaded] = useState(false)
   const [error, setError] = useState('')
   const [drag, setDrag] = useState(null) // { type: 'card' | 'task', id }
@@ -34,28 +60,34 @@ export default function Week() {
   const [openedCard, setOpenedCard] = useState(null)
   const [openedTask, setOpenedTask] = useState(null)
 
+  const weekStart = useMemo(() => startOfWeek(fromISO(day)), [day])
   const start = toISO(weekStart)
   const end = toISO(addDays(weekStart, 6))
 
+  useEffect(() => {
+    try { localStorage.setItem(VIEW_KEY, view) } catch { /* не критично */ }
+  }, [view])
+
+  const shift = (days) => setDay(toISO(addDays(fromISO(day), days)))
+  const openDay = (iso) => { setDay(iso); setView('day') }
+
   const load = useCallback(async () => {
     try {
-      const [diary, t, noDue, tg, habits, logs] = await Promise.all([
+      const [diary, undated, t, noDue, tg, habitList, logs] = await Promise.all([
         api('/diary', { query: { start, end } }),
+        api('/diary', { query: { no_date: true } }),
         api('/tasks', { query: { due_from: start, due_to: end, sort: 'manual' } }),
         api('/tasks', { query: { status: 'active', no_due: true, sort: 'manual' } }),
         api('/tags'),
         api('/habits', { query: { today } }),
         api('/habits/logs', { query: { start, end } }),
       ])
-      setCards(diary)
+      setCards([...diary, ...undated])
       setTasks(t)
       setBacklog(noDue)
       setTags(tg)
-      setHabitsCount(habits.length)
-      const activeIds = new Set(habits.map((h) => h.id))
-      const byDay = {}
-      for (const l of logs) if (activeIds.has(l.habit_id)) byDay[l.date] = (byDay[l.date] || 0) + 1
-      setLogsByDay(byDay)
+      setHabits(habitList)
+      setHabitLogs(new Set(logs.map((l) => `${l.habit_id}|${l.date}`)))
       setLoaded(true)
       setError('')
     } catch (e) {
@@ -67,7 +99,7 @@ export default function Week() {
 
   const cardsByDay = useMemo(() => {
     const map = {}
-    for (const c of cards) (map[c.date] ||= []).push(c)
+    for (const c of cards) (map[colKey(c.date)] ||= []).push(c)
     for (const list of Object.values(map)) list.sort((a, b) => a.position - b.position)
     return map
   }, [cards])
@@ -80,8 +112,9 @@ export default function Week() {
 
   const endDrag = () => { setDrag(null); setHint(null) }
 
-  // ---------- Записи (карточки) ----------
+  // ---------- Записи и заметки (карточки) ----------
 
+  // date = null — колонка «Без даты»
   const moveCard = async (cardId, date, index) => {
     const card = cards.find((c) => c.id === cardId)
     if (!card) return
@@ -134,7 +167,7 @@ export default function Week() {
 
   // ---------- Задачи ----------
 
-  // date = null — колонка «Без срока»
+  // date = null — колонка «Без даты»
   const moveTask = async (taskId, date, index) => {
     const task = tasks.find((t) => t.id === taskId) || backlog.find((t) => t.id === taskId)
     if (!task) return
@@ -176,25 +209,110 @@ export default function Week() {
     } catch (e) { setError(e.message) }
   }
 
+  // ---------- Привычки ----------
+
+  const toggleHabit = async (habit, date) => {
+    const key = `${habit.id}|${date}`
+    const wasDone = habitLogs.has(key)
+    setHabitLogs((prev) => {
+      const next = new Set(prev)
+      wasDone ? next.delete(key) : next.add(key)
+      return next
+    })
+    try {
+      if (wasDone) await api(`/habits/${habit.id}/logs/${date}`, { method: 'DELETE' })
+      else await api(`/habits/${habit.id}/logs`, { method: 'POST', body: { date } })
+    } catch (e) {
+      setError(e.message)
+      load()
+    }
+  }
+
   const goToCard = (card) => {
-    setWeekStart(startOfWeek(fromISO(card.date)))
+    if (card.date) setDay(card.date)
     setOpenedCard(card)
   }
 
-  const dnd = { drag, setDrag, hint, setHint, endDrag }
+  // ---------- Перетаскивание ----------
+
+  const startDrag = (e, type, id) => beginDrag(e, {
+    onStart: () => setDrag({ type, id }),
+    onMove: (x, y) => {
+      const h = hitTest(type, id, x, y)
+      setHint((prev) => (prev?.zone === h?.zone && prev?.index === h?.index ? prev : h))
+    },
+    onDrop: (x, y) => {
+      const h = hitTest(type, id, x, y)
+      endDrag()
+      if (!h) return
+      const key = h.zone.slice(type.length + 1)
+      const date = key === 'none' ? null : key
+      if (type === 'task') moveTask(id, date, h.index)
+      else moveCard(id, date, h.index)
+    },
+    onCancel: endDrag,
+  })
+
+  const dnd = { drag, hint, startDrag }
+  const handlers = {
+    onOpenCard: setOpenedCard,
+    onOpenTask: setOpenedTask,
+    onAddCard: addCard,
+    onAddTask: addTask,
+    onToggleTask: toggleTask,
+    onToggleHabit: toggleHabit,
+    onOpenDay: openDay,
+  }
+
+  const backlogColumn = (
+    <DayColumn
+      date={null}
+      title="📥 Без даты"
+      subtitle={String(backlog.length + (cardsByDay.none?.length || 0))}
+      today={today}
+      cards={cardsByDay.none || []}
+      tasks={backlog}
+      dnd={dnd}
+      {...handlers}
+    />
+  )
+
+  const dayColumn = (iso, i, large) => (
+    <DayColumn
+      key={iso}
+      date={iso}
+      large={large}
+      title={large ? formatDate(fromISO(iso), { weekday: 'long', day: 'numeric', month: 'long' }) : DAY_FULL[i]}
+      subtitle={iso === today ? 'сегодня' : large ? '' : formatDate(fromISO(iso))}
+      isToday={iso === today}
+      today={today}
+      cards={cardsByDay[iso] || []}
+      tasks={tasksByDay[iso] || []}
+      habits={habits}
+      habitLogs={habitLogs}
+      dnd={dnd}
+      {...handlers}
+    />
+  )
 
   return (
     <div className="page page-wide">
       <div className="page-header">
         <div>
-          <h1>Дневник недели</h1>
-          <p className="subtitle">Задачи и записи по дням. Перетаскивайте мышкой между днями — у задачи поменяется срок. Клик — открыть.</p>
+          <h1>Дневник</h1>
+          <p className="subtitle">Задачи, записи и привычки по дням. Перетаскивайте мышкой между днями — у задачи поменяется срок. Клик — открыть.</p>
         </div>
         <div className="week-nav">
-          <button className="btn btn-icon" onClick={() => setWeekStart(addDays(weekStart, -7))}>‹</button>
-          <span className="small">{weekLabel(weekStart)}</span>
-          <button className="btn btn-icon" onClick={() => setWeekStart(addDays(weekStart, 7))}>›</button>
-          <button className="btn btn-sm" onClick={() => setWeekStart(startOfWeek(new Date()))}>Эта неделя</button>
+          <div className="tabs">
+            <button className={`tab ${view === 'day' ? 'active' : ''}`} onClick={() => setView('day')}>День</button>
+            <button className={`tab ${view === 'week' ? 'active' : ''}`} onClick={() => setView('week')}>Неделя</button>
+          </div>
+          <button className="btn btn-icon" onClick={() => shift(view === 'day' ? -1 : -7)} title={view === 'day' ? 'Предыдущий день' : 'Предыдущая неделя'}>‹</button>
+          <span className="small week-nav-label">
+            {view === 'day' ? formatDate(fromISO(day), { day: 'numeric', month: 'long', year: 'numeric' }) : weekLabel(weekStart)}
+          </span>
+          <button className="btn btn-icon" onClick={() => shift(view === 'day' ? 1 : 7)} title={view === 'day' ? 'Следующий день' : 'Следующая неделя'}>›</button>
+          <button className="btn btn-sm" onClick={() => setDay(today)}>Сегодня</button>
         </div>
       </div>
 
@@ -202,43 +320,27 @@ export default function Week() {
 
       {error && <div className="alert alert-error">{error}</div>}
 
-      {loaded && (
+      {loaded && view === 'week' && (
         <div className="week-grid">
-          {weekDates(weekStart).map((d, i) => {
-            const iso = toISO(d)
-            return (
-              <DayColumn
-                key={iso}
-                date={iso}
-                title={DAY_FULL[i]}
-                subtitle={formatDate(d)}
-                isToday={iso === today}
-                today={today}
-                cards={cardsByDay[iso] || []}
-                tasks={tasksByDay[iso] || []}
-                habitsDone={logsByDay[iso] || 0}
-                habitsCount={habitsCount}
-                dnd={dnd}
-                onMoveCard={moveCard}
-                onMoveTask={moveTask}
-                onOpenCard={setOpenedCard}
-                onOpenTask={setOpenedTask}
-                onAddCard={addCard}
-                onAddTask={addTask}
-                onToggleTask={toggleTask}
-              />
-            )
-          })}
-          <BacklogColumn
-            tasks={backlog}
-            today={today}
-            dnd={dnd}
-            onMoveTask={moveTask}
-            onOpenTask={setOpenedTask}
-            onAddTask={addTask}
-            onToggleTask={toggleTask}
-          />
+          {weekDates(weekStart).map((d, i) => dayColumn(toISO(d), i, false))}
+          {backlogColumn}
         </div>
+      )}
+
+      {loaded && view === 'day' && (
+        <>
+          <WeekStrip
+            weekStart={weekStart}
+            day={day}
+            today={today}
+            counts={(iso) => (tasksByDay[iso]?.length || 0) + (cardsByDay[iso]?.length || 0)}
+            onPick={setDay}
+          />
+          <div className="day-view">
+            {dayColumn(day, 0, true)}
+            {backlogColumn}
+          </div>
+        </>
       )}
 
       {openedCard && (
@@ -251,129 +353,105 @@ export default function Week() {
   )
 }
 
-// ---------- Колонки ----------
+// ---------- Колонка дня (date = null — колонка «Без даты») ----------
 
 function DayColumn({
-  date, title, subtitle, isToday, today, cards, tasks, habitsDone, habitsCount, dnd,
-  onMoveCard, onMoveTask, onOpenCard, onOpenTask, onAddCard, onAddTask, onToggleTask,
+  date, title, subtitle, isToday, large, today, cards, tasks, habits = [], habitLogs, dnd,
+  onOpenCard, onOpenTask, onAddCard, onAddTask, onToggleTask, onToggleHabit, onOpenDay,
 }) {
-  const { drag, hint, setHint, endDrag } = dnd
-  const count = (list) => list.filter((x) => x.id !== drag?.id).length
-
-  // Если отпустить не над списком, а просто над днём — элемент встаёт в конец нужного списка
-  const onDragOver = (e) => {
-    if (!drag) return
-    e.preventDefault()
-    const zone = `${drag.type}:${date}`
-    const index = count(drag.type === 'task' ? tasks : cards)
-    if (hint?.zone !== zone || hint.index !== index) setHint({ zone, index })
-  }
-  const onDrop = (e) => {
-    if (!drag) return
-    e.preventDefault()
-    if (drag.type === 'task') onMoveTask(drag.id, date, count(tasks))
-    else onMoveCard(drag.id, date, count(cards))
-    endDrag()
-  }
-
-  const isTarget = hint?.zone?.endsWith(`:${date}`)
+  const key = colKey(date)
+  const backlog = date === null
+  const isTarget = dnd.hint?.zone?.endsWith(`:${key}`)
 
   return (
-    <div className={`card day-card ${isToday ? 'today' : ''} ${isTarget ? 'drop-target' : ''}`} onDragOver={onDragOver} onDrop={onDrop}>
+    <div
+      data-col={key}
+      className={`card day-card ${isToday ? 'today' : ''} ${backlog ? 'backlog' : ''} ${large ? 'large' : ''} ${isTarget ? 'drop-target' : ''}`}
+    >
       <div className="day-card-head">
-        <h3>{title}</h3>
-        <span className="small muted">{isToday ? 'сегодня' : subtitle}</span>
+        {backlog || large ? (
+          <h3>{title}</h3>
+        ) : (
+          <button className="day-title-btn" onClick={() => onOpenDay(date)} title="Открыть только этот день">
+            <h3>{title}</h3>
+          </button>
+        )}
+        <span className="small muted">{subtitle}</span>
       </div>
 
       <div className="day-section-title">Задачи</div>
       <SortableList
         type="task"
-        zone={`task:${date}`}
+        zone={`task:${key}`}
         items={tasks}
         dnd={dnd}
-        onDrop={(id, index) => onMoveTask(id, date, index)}
         renderItem={(t) => <TaskChip task={t} today={today} onOpen={onOpenTask} onToggle={onToggleTask} />}
       />
 
-      <div className="day-section-title">Записи</div>
+      <div className="day-section-title">{backlog ? 'Заметки' : 'Записи'}</div>
       <SortableList
         type="card"
-        zone={`card:${date}`}
+        zone={`card:${key}`}
         items={cards}
         dnd={dnd}
-        onDrop={(id, index) => onMoveCard(id, date, index)}
         renderItem={(c) => <DiaryCardView card={c} onOpen={onOpenCard} />}
       />
 
-      <QuickAdd onAddTask={(text) => onAddTask(date, text)} onAddCard={(text) => onAddCard(date, text)} />
+      <QuickAdd
+        cardLabel={backlog ? 'Заметка' : 'Запись'}
+        onAddTask={(text) => onAddTask(date, text)}
+        onAddCard={(text) => onAddCard(date, text)}
+      />
 
-      {habitsCount > 0 && (
-        <div className="day-extras">
-          <div className="row small muted" style={{ justifyContent: 'space-between' }}>
-            <span>Привычки</span><span>{habitsDone}/{habitsCount}</span>
-          </div>
-          <div className="progress"><div style={{ width: `${Math.round((habitsDone / habitsCount) * 100)}%` }} /></div>
+      {backlog ? (
+        <span className="small muted">Перетащите задачу или заметку в день, чтобы назначить дату</span>
+      ) : habits.length > 0 && (
+        <DayHabits key={date} date={date} today={today} defaultOpen={isToday || large} habits={habits} habitLogs={habitLogs} onToggle={onToggleHabit} />
+      )}
+    </div>
+  )
+}
+
+// Привычки дня: прогресс, по клику — список с отметками прямо из дневника
+function DayHabits({ date, today, defaultOpen, habits, habitLogs, onToggle }) {
+  const [open, setOpen] = useState(defaultOpen)
+  const done = habits.filter((h) => habitLogs.has(`${h.id}|${date}`)).length
+  const future = date > today
+
+  return (
+    <div className="day-extras">
+      <button className="day-habits-toggle" onClick={() => setOpen(!open)} aria-expanded={open}>
+        <span>Привычки {open ? '▾' : '▸'}</span>
+        <span>{done}/{habits.length}</span>
+      </button>
+      <div className="progress"><div style={{ width: `${Math.round((done / habits.length) * 100)}%` }} /></div>
+      {open && (
+        <div className="day-habits">
+          {habits.map((h) => (
+            <Checkbox
+              key={h.id}
+              size="sm"
+              className="strike"
+              color={h.color}
+              checked={habitLogs.has(`${h.id}|${date}`)}
+              disabled={future}
+              title={future ? 'Этот день ещё не наступил' : undefined}
+              onChange={() => onToggle(h, date)}
+              label={`${h.icon} ${h.title}`}
+            />
+          ))}
         </div>
       )}
     </div>
   )
 }
 
-function BacklogColumn({ tasks, today, dnd, onMoveTask, onOpenTask, onAddTask, onToggleTask }) {
-  const { drag, hint, setHint, endDrag } = dnd
-  const count = tasks.filter((x) => x.id !== drag?.id).length
-
-  const onDragOver = (e) => {
-    if (drag?.type !== 'task') return
-    e.preventDefault()
-    if (hint?.zone !== 'task:none' || hint.index !== count) setHint({ zone: 'task:none', index: count })
-  }
-  const onDrop = (e) => {
-    if (drag?.type !== 'task') return
-    e.preventDefault()
-    onMoveTask(drag.id, null, count)
-    endDrag()
-  }
-
-  return (
-    <div className={`card day-card backlog ${hint?.zone === 'task:none' ? 'drop-target' : ''}`} onDragOver={onDragOver} onDrop={onDrop}>
-      <div className="day-card-head">
-        <h3>📥 Без срока</h3>
-        <span className="small muted">{tasks.length}</span>
-      </div>
-      <SortableList
-        type="task"
-        zone="task:none"
-        items={tasks}
-        dnd={dnd}
-        onDrop={(id, index) => onMoveTask(id, null, index)}
-        renderItem={(t) => <TaskChip task={t} today={today} onOpen={onOpenTask} onToggle={onToggleTask} />}
-      />
-      <QuickAdd onAddTask={(text) => onAddTask(null, text)} />
-      <span className="small muted">Перетащите задачу в день, чтобы назначить срок</span>
-    </div>
-  )
-}
-
-// Список с перетаскиванием: принимает только элементы своего типа (задачи или записи)
-function SortableList({ type, zone, items, dnd, onDrop, renderItem }) {
-  const { drag, setDrag, hint, setHint, endDrag } = dnd
-  const ref = useRef(null)
+// Список с перетаскиванием: принимает только элементы своего типа (задачи или записи).
+// Куда встанет элемент, считает hitTest по атрибутам data-zone / data-sort-id.
+function SortableList({ type, zone, items, dnd, renderItem }) {
+  const { drag, hint, startDrag } = dnd
   const accepts = drag?.type === type
   const dropIndex = accepts && hint?.zone === zone ? hint.index : null
-
-  // На какое место встанет элемент: сколько элементов выше курсора
-  const indexAt = (clientY) => {
-    const els = [...ref.current.querySelectorAll(':scope > [data-sort-id]')]
-      .filter((el) => Number(el.dataset.sortId) !== drag.id)
-    let index = 0
-    for (const el of els) {
-      const r = el.getBoundingClientRect()
-      if (clientY > r.top + r.height / 2) index++
-      else break
-    }
-    return index
-  }
 
   const rendered = []
   let visibleIndex = 0
@@ -388,14 +466,7 @@ function SortableList({ type, zone, items, dnd, onDrop, renderItem }) {
         key={item.id}
         data-sort-id={item.id}
         className={isDragged ? 'is-dragging' : undefined}
-        draggable
-        onDragStart={(e) => {
-          e.stopPropagation()
-          e.dataTransfer.effectAllowed = 'move'
-          e.dataTransfer.setData('text/plain', `${type}:${item.id}`)
-          setDrag({ type, id: item.id })
-        }}
-        onDragEnd={endDrag}
+        onPointerDown={(e) => startDrag(e, type, item.id)}
       >
         {renderItem(item)}
       </div>,
@@ -404,27 +475,32 @@ function SortableList({ type, zone, items, dnd, onDrop, renderItem }) {
   if (dropIndex === visibleIndex) rendered.push(<div key="drop" className="drop-line" />)
 
   return (
-    <div
-      ref={ref}
-      className={`sortable ${accepts ? 'accepting' : ''}`}
-      onDragOver={(e) => {
-        if (!accepts) return
-        e.preventDefault()
-        e.stopPropagation()
-        e.dataTransfer.dropEffect = 'move'
-        const index = indexAt(e.clientY)
-        if (hint?.zone !== zone || hint.index !== index) setHint({ zone, index })
-      }}
-      onDrop={(e) => {
-        if (!accepts) return
-        e.preventDefault()
-        e.stopPropagation()
-        onDrop(drag.id, indexAt(e.clientY))
-        endDrag()
-      }}
-    >
+    <div data-zone={zone} className={`sortable ${accepts ? 'accepting' : ''}`}>
       {rendered}
       {items.length === 0 && dropIndex == null && <div className="diary-empty">{accepts ? 'Перетащите сюда' : 'Пусто'}</div>}
+    </div>
+  )
+}
+
+// Полоска дней недели в режиме «День»: быстрый переход и число дел в каждом дне
+function WeekStrip({ weekStart, day, today, counts, onPick }) {
+  return (
+    <div className="week-strip">
+      {weekDates(weekStart).map((d, i) => {
+        const iso = toISO(d)
+        const n = counts(iso)
+        return (
+          <button
+            key={iso}
+            className={`week-strip-day ${iso === day ? 'active' : ''} ${iso === today ? 'today' : ''}`}
+            onClick={() => onPick(iso)}
+          >
+            <span className="small">{DAY_SHORT[i]}</span>
+            <b>{d.getDate()}</b>
+            <span className="week-strip-count">{n > 0 ? n : ''}</span>
+          </button>
+        )
+      })}
     </div>
   )
 }
@@ -440,9 +516,7 @@ function TaskChip({ task, today, onOpen, onToggle }) {
       onClick={() => onOpen(task)}
       title="Клик — открыть, перетащите — перенести"
     >
-      <button className={`checkbox ${task.done ? 'checked' : ''}`} onClick={(e) => { e.stopPropagation(); onToggle(task) }} aria-label="Выполнено">
-        {task.done && '✓'}
-      </button>
+      <Checkbox size="sm" checked={task.done} onChange={() => onToggle(task)} title="Выполнено" />
       <div className="content">
         <div className="task-chip-title">{task.title}</div>
         {(task.priority === 'high' || task.description || overdue || task.tags.length > 0) && (
@@ -468,7 +542,7 @@ function DiaryCardView({ card, onOpen }) {
 }
 
 // Быстрое добавление: «+ Задача» / «+ Запись», затем заголовок и Enter
-function QuickAdd({ onAddTask, onAddCard }) {
+function QuickAdd({ onAddTask, onAddCard, cardLabel = 'Запись' }) {
   const [mode, setMode] = useState(null) // 'task' | 'card'
   const [text, setText] = useState('')
 
@@ -476,7 +550,7 @@ function QuickAdd({ onAddTask, onAddCard }) {
     return (
       <div className="row" style={{ gap: 4 }}>
         {onAddTask && <button className="btn btn-ghost btn-sm add-card-btn" onClick={() => setMode('task')}>+ Задача</button>}
-        {onAddCard && <button className="btn btn-ghost btn-sm add-card-btn" onClick={() => setMode('card')}>+ Запись</button>}
+        {onAddCard && <button className="btn btn-ghost btn-sm add-card-btn" onClick={() => setMode('card')}>+ {cardLabel}</button>}
       </div>
     )
   }
@@ -494,7 +568,7 @@ function QuickAdd({ onAddTask, onAddCard }) {
       <input
         className="input"
         autoFocus
-        placeholder={mode === 'task' ? 'Новая задача и Enter' : 'Заголовок записи и Enter'}
+        placeholder={mode === 'task' ? 'Новая задача и Enter' : `${cardLabel}: заголовок и Enter`}
         maxLength={mode === 'task' ? 200 : 100}
         value={text}
         onChange={(e) => setText(e.target.value)}
@@ -509,6 +583,7 @@ function CardEditor({ card, onSave, onDelete, onClose }) {
   const [form, setForm] = useState({ ...card })
   const [confirmDelete, setConfirmDelete] = useState(false)
   const set = (patch) => setForm((f) => ({ ...f, ...patch }))
+  const canSave = Boolean(form.title.trim())
 
   if (confirmDelete) {
     return (
@@ -524,57 +599,63 @@ function CardEditor({ card, onSave, onDelete, onClose }) {
       actions={<>
         <button className="btn btn-ghost" style={{ color: 'var(--danger)', marginRight: 'auto' }} onClick={() => setConfirmDelete(true)}>Удалить</button>
         <button className="btn" onClick={onClose}>Отмена</button>
-        <button className="btn btn-primary" disabled={!form.title.trim()} onClick={() => onSave(form)}>Сохранить</button>
+        <button className="btn btn-primary" disabled={!canSave} onClick={() => onSave(form)} title="Ctrl + Enter">Сохранить</button>
       </>}
     >
-      <input
-        className="input card-editor-title"
-        maxLength={100}
-        value={form.title}
-        onChange={(e) => set({ title: e.target.value })}
-        placeholder="Заголовок"
-      />
-      <div className="field">
-        <label>Описание</label>
-        <textarea
-          className="textarea"
-          style={{ minHeight: 180 }}
-          maxLength={5000}
-          placeholder="Подробности, мысли, выводы…"
-          value={form.text}
-          onChange={(e) => set({ text: e.target.value })}
-          autoFocus
+      {/* Ctrl+Enter — сохранить, не отрывая рук от клавиатуры */}
+      <div className="stack" onKeyDown={(e) => { if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && canSave) onSave(form) }}>
+        <input
+          className="input card-editor-title"
+          maxLength={100}
+          value={form.title}
+          onChange={(e) => set({ title: e.target.value })}
+          placeholder="Заголовок"
         />
-      </div>
-      <div className="form-row">
         <div className="field">
-          <label>День</label>
-          <input className="input input-inline" type="date" value={form.date} onChange={(e) => e.target.value && set({ date: e.target.value })} />
+          <label>Описание</label>
+          <textarea
+            className="textarea"
+            style={{ minHeight: 180 }}
+            maxLength={5000}
+            placeholder="Подробности, мысли, выводы…"
+            value={form.text}
+            onChange={(e) => set({ text: e.target.value })}
+            autoFocus
+          />
         </div>
-        <div className="field">
-          <label>Цвет</label>
-          <div className="row" style={{ gap: 6 }}>
-            {CARD_COLORS.map((c) => (
-              <button
-                key={c}
-                type="button"
-                className={`color-dot ${form.color === c ? 'active' : ''}`}
-                style={{ background: c }}
-                onClick={() => set({ color: c })}
-                aria-label={c}
-              />
-            ))}
+        <div className="form-row">
+          <div className="field">
+            <label>День</label>
+            <div className="row" style={{ flexWrap: 'nowrap' }}>
+              <input className="input input-inline" type="date" value={form.date || ''} onChange={(e) => set({ date: e.target.value || null })} />
+              {form.date && <button type="button" className="btn btn-ghost btn-sm" onClick={() => set({ date: null })} title="Убрать в «Без даты»">без даты</button>}
+            </div>
+          </div>
+          <div className="field">
+            <label>Цвет</label>
+            <div className="row" style={{ gap: 6 }}>
+              {CARD_COLORS.map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  className={`color-dot ${form.color === c ? 'active' : ''}`}
+                  style={{ background: c }}
+                  onClick={() => set({ color: c })}
+                  aria-label={c}
+                />
+              ))}
+            </div>
           </div>
         </div>
+        {card.updated_at && (
+          <span className="small muted">Изменено: {new Date(card.updated_at).toLocaleString('ru-RU')} · Ctrl + Enter — сохранить</span>
+        )}
       </div>
-      {card.updated_at && (
-        <span className="small muted">Изменено: {new Date(card.updated_at).toLocaleString('ru-RU')}</span>
-      )}
     </Modal>
   )
 }
 
-// Поиск по записям дневника за последние ~10 месяцев и 2 месяца вперёд
+// Поиск по записям дневника за последние ~10 месяцев и 2 месяца вперёд (и по заметкам без даты)
 function DiarySearch({ onPick }) {
   const [query, setQuery] = useState('')
   const [results, setResults] = useState(null)
@@ -587,7 +668,7 @@ function DiarySearch({ onPick }) {
         const found = await api('/diary', {
           query: { start: toISO(addDays(now, -300)), end: toISO(addDays(now, 60)), search: query },
         })
-        setResults(found.reverse())
+        setResults(found.reverse()) // сначала заметки без даты и свежие записи
       } catch { setResults([]) }
     }, 300)
     return () => clearTimeout(timer)
@@ -595,7 +676,7 @@ function DiarySearch({ onPick }) {
 
   return (
     <div className="stack" style={{ gap: 8 }}>
-      <input className="input" style={{ maxWidth: 360 }} placeholder="🔍 Поиск по записям дневника" value={query} onChange={(e) => setQuery(e.target.value)} />
+      <input className="input" style={{ maxWidth: 360 }} placeholder="🔍 Поиск по записям и заметкам" value={query} onChange={(e) => setQuery(e.target.value)} />
       {results && (
         <div className="card" style={{ padding: 8 }}>
           {results.length === 0 ? (
@@ -606,7 +687,9 @@ function DiarySearch({ onPick }) {
                 <button key={c.id} className="search-result" onClick={() => { onPick(c); setQuery('') }}>
                   <span className="dot" style={{ background: c.color }} />
                   <span className="content title">{c.title}</span>
-                  <span className="small muted">{formatDate(fromISO(c.date), { day: 'numeric', month: 'short', year: 'numeric' })}</span>
+                  <span className="small muted">
+                    {c.date ? formatDate(fromISO(c.date), { day: 'numeric', month: 'short', year: 'numeric' }) : 'без даты'}
+                  </span>
                 </button>
               ))}
             </div>

@@ -3,6 +3,8 @@ import { api } from '../api'
 import { addDays, formatDate, fromISO, startOfWeek, toISO, todayISO } from '../dates'
 import Modal from '../components/Modal'
 import TaskEditor, { PRIORITIES, TaskFields } from '../components/TaskEditor'
+import Checkbox from '../components/Checkbox'
+import { beginDrag, indexAt } from '../dnd'
 
 const EMPTY_TASK = { title: '', description: '', due_date: '', priority: 'medium', tag_ids: [] }
 
@@ -21,6 +23,28 @@ const readSort = () => {
     return ['due', 'manual'].includes(saved) ? saved : 'created'
   } catch { return 'created' }
 }
+
+// Группы для сортировки «по сроку»: задача попадает в первую подходящую
+function dueGroup(task, today) {
+  if (task.done) return 'done'
+  if (!task.due_date) return 'none'
+  if (task.due_date < today) return 'overdue'
+  if (task.due_date === today) return 'today'
+  const d = fromISO(today)
+  if (task.due_date === toISO(addDays(d, 1))) return 'tomorrow'
+  if (task.due_date <= toISO(addDays(startOfWeek(d), 6))) return 'week'
+  return 'later'
+}
+
+const DUE_GROUPS = [
+  ['overdue', '🔥 Просрочено'],
+  ['today', '📌 Сегодня'],
+  ['tomorrow', 'Завтра'],
+  ['week', 'До конца недели'],
+  ['later', 'Позже'],
+  ['none', '📥 Без срока'],
+  ['done', '✓ Выполненные'],
+]
 
 // Превращает выбранный режим срока в параметры due_from / due_to
 function dateRange(mode, from, to) {
@@ -53,6 +77,7 @@ export default function Tasks() {
   const [form, setForm] = useState(EMPTY_TASK)
   const [editing, setEditing] = useState(null)
   const [showTags, setShowTags] = useState(false)
+  const [showFilters, setShowFilters] = useState(false)
   const [error, setError] = useState('')
 
   const loadTags = useCallback(() => api('/tags').then(setTags).catch((e) => setError(e.message)), [])
@@ -75,7 +100,8 @@ export default function Tasks() {
   const toggleTagFilter = (id) =>
     setTagIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]))
 
-  const filtersActive = tagIds.length > 0 || dateMode !== 'any' || search.trim()
+  const panelFilters = tagIds.length + (dateMode !== 'any' ? 1 : 0) // сколько фильтров выбрано в панели
+  const filtersActive = panelFilters > 0 || search.trim()
   const resetFilters = () => {
     setTagIds([])
     setDateMode('any')
@@ -102,11 +128,16 @@ export default function Tasks() {
     } catch (err) { setError(err.message) }
   }
 
+  // Отметка видна сразу, а список перестраивается чуть позже — чтобы задача не «прыгала» из-под курсора
   const toggleDone = async (task) => {
+    setTasks((prev) => prev.map((t) => (t.id === task.id ? { ...t, done: !t.done } : t)))
     try {
       await api(`/tasks/${task.id}`, { method: 'PATCH', body: { done: !task.done } })
+      setTimeout(loadTasks, 450)
+    } catch (err) {
+      setError(err.message)
       loadTasks()
-    } catch (err) { setError(err.message) }
+    }
   }
 
   // Перетаскивание: dragged встаёт на место index в видимом списке (без неё самой)
@@ -128,8 +159,9 @@ export default function Tasks() {
     }
   }
 
-  const onTagsChanged = () => {
-    setTagIds([]) // выбранный тег мог быть удалён
+  // removed — тег удалён: сбрасываем фильтр по тегам (выбранный тег мог исчезнуть)
+  const onTagsChanged = (removed) => {
+    if (removed) setTagIds([])
     loadTags()
     loadTasks()
   }
@@ -161,6 +193,9 @@ export default function Tasks() {
           ))}
         </div>
         <input className="input" style={{ maxWidth: 260 }} placeholder="🔍 Поиск по названию" value={search} onChange={(e) => setSearch(e.target.value)} />
+        <button className={`btn ${showFilters || panelFilters ? 'btn-active' : ''}`} onClick={() => setShowFilters(!showFilters)}>
+          Фильтры{panelFilters > 0 && <span className="badge badge-accent">{panelFilters}</span>} {showFilters ? '▴' : '▾'}
+        </button>
         <div className="spacer" />
         <label className="row small muted" style={{ flexWrap: 'nowrap' }}>
           Сортировка:
@@ -172,7 +207,7 @@ export default function Tasks() {
         </label>
       </div>
 
-      <div className="card filter-panel">
+      {showFilters && <div className="card filter-panel">
         <div className="filter-row">
           <span className="filter-label">Срок</span>
           <div className="row">
@@ -211,14 +246,19 @@ export default function Tasks() {
             </div>
           </div>
         )}
+      </div>}
+
+      {filtersActive && (
         <div className="row small muted">
           <span>Найдено: {tasks.length}</span>
-          {filtersActive && <button className="btn btn-ghost btn-sm" onClick={resetFilters}>Сбросить фильтры</button>}
+          <button className="btn btn-ghost btn-sm" onClick={resetFilters}>Сбросить фильтры</button>
         </div>
-      </div>
+      )}
 
       {tasks.length === 0 ? (
         <div className="card empty">Задач не найдено</div>
+      ) : sort === 'due' ? (
+        <GroupedTasks tasks={tasks} today={today} onToggle={toggleDone} onOpen={setEditing} />
       ) : (
         <TaskBoard
           tasks={tasks}
@@ -229,7 +269,9 @@ export default function Tasks() {
         />
       )}
       <p className="small muted">
-        Клик по задаче — открыть описание и изменить. Задачи можно перетаскивать мышкой — порядок сохранится как «свой порядок».
+        {sort === 'due'
+          ? 'Клик по задаче — открыть описание и изменить. Чтобы расставить задачи вручную, выберите «свой порядок».'
+          : 'Клик по задаче — открыть описание и изменить. Задачи можно перетаскивать мышкой — порядок сохранится как «свой порядок».'}
       </p>
 
       {editing && (
@@ -241,23 +283,43 @@ export default function Tasks() {
   )
 }
 
+// Сортировка «по сроку»: задачи разложены по группам «Просрочено», «Сегодня», «Завтра»…
+function GroupedTasks({ tasks, today, onToggle, onOpen }) {
+  const groups = {}
+  for (const t of tasks) (groups[dueGroup(t, today)] ||= []).push(t)
+  return (
+    <div className="stack" style={{ gap: 18 }}>
+      {DUE_GROUPS.filter(([id]) => groups[id]).map(([id, title]) => (
+        <section key={id} className="stack" style={{ gap: 8 }}>
+          <div className={`task-group-title ${id === 'overdue' ? 'danger' : ''}`}>
+            {title} <span className="muted">{groups[id].length}</span>
+          </div>
+          <TaskBoard tasks={groups[id]} today={today} onToggle={onToggle} onOpen={onOpen} />
+        </section>
+      ))}
+    </div>
+  )
+}
+
 // Список задач-карточек с перетаскиванием (как в дневнике). Описание видно только в открытой задаче.
+// Без onMove — список без перетаскивания.
 function TaskBoard({ tasks, today, onToggle, onOpen, onMove }) {
   const listRef = useRef(null)
   const [dragId, setDragId] = useState(null)
   const [dropIndex, setDropIndex] = useState(null)
 
-  const indexAt = (clientY) => {
-    const els = [...listRef.current.querySelectorAll('[data-task-id]')]
-      .filter((el) => Number(el.dataset.taskId) !== dragId)
-    let index = 0
-    for (const el of els) {
-      const r = el.getBoundingClientRect()
-      if (clientY > r.top + r.height / 2) index++
-      else break
-    }
-    return index
-  }
+  const at = (y, id) => indexAt(listRef.current, y, ':scope > [data-sort-id]', id)
+
+  const startDrag = (e, id) => beginDrag(e, {
+    onStart: () => setDragId(id),
+    onMove: (x, y) => setDropIndex(at(y, id)),
+    onDrop: (x, y) => {
+      const index = at(y, id)
+      endDrag()
+      onMove(id, index)
+    },
+    onCancel: () => endDrag(),
+  })
 
   const endDrag = () => { setDragId(null); setDropIndex(null) }
 
@@ -272,25 +334,13 @@ function TaskBoard({ tasks, today, onToggle, onOpen, onMove }) {
     items.push(
       <div
         key={t.id}
-        data-task-id={t.id}
+        data-sort-id={t.id}
         className={`task-card ${t.done ? 'done' : ''} ${t.id === dragId ? 'dragging' : ''}`}
         style={{ borderLeftColor: t.tags[0]?.color || 'var(--border)' }}
-        draggable
-        onDragStart={(e) => {
-          e.dataTransfer.effectAllowed = 'move'
-          e.dataTransfer.setData('text/plain', String(t.id))
-          setDragId(t.id)
-        }}
-        onDragEnd={endDrag}
+        onPointerDown={onMove ? (e) => startDrag(e, t.id) : undefined}
         onClick={() => onOpen(t)}
       >
-        <button
-          className={`checkbox ${t.done ? 'checked' : ''}`}
-          onClick={(e) => { e.stopPropagation(); onToggle(t) }}
-          aria-label="Выполнено"
-        >
-          {t.done && '✓'}
-        </button>
+        <Checkbox checked={t.done} onChange={() => onToggle(t)} title="Выполнено" />
         <div className="content">
           <div className="title">{t.title}</div>
           <div className="row" style={{ marginTop: 4, gap: 6 }}>
@@ -306,37 +356,24 @@ function TaskBoard({ tasks, today, onToggle, onOpen, onMove }) {
             {t.description && <span className="badge" title="Есть описание">📝</span>}
           </div>
         </div>
-        <span className="drag-handle" aria-hidden="true">⋮⋮</span>
+        {onMove && <span className="drag-handle" aria-hidden="true">⋮⋮</span>}
       </div>,
     )
   }
   if (dropIndex === visibleIndex) items.push(<div key="drop" className="drop-line" />)
 
   return (
-    <div
-      className="task-list"
-      ref={listRef}
-      onDragOver={(e) => {
-        if (dragId == null) return
-        e.preventDefault()
-        e.dataTransfer.dropEffect = 'move'
-        const index = indexAt(e.clientY)
-        if (index !== dropIndex) setDropIndex(index)
-      }}
-      onDrop={(e) => {
-        e.preventDefault()
-        if (dragId != null) onMove(dragId, indexAt(e.clientY))
-        endDrag()
-      }}
-    >
+    <div className="task-list" ref={listRef}>
       {items}
     </div>
   )
 }
 
+// Окно тегов: создание, изменение названия и цвета (прямо в списке), удаление
 function TagManager({ tags, onChanged, onClose }) {
   const [name, setName] = useState('')
   const [color, setColor] = useState('#7c5cff')
+  const [editing, setEditing] = useState(null) // { id, name, color }
   const [error, setError] = useState('')
 
   const create = async (e) => {
@@ -354,6 +391,16 @@ function TagManager({ tags, onChanged, onClose }) {
     if (!window.confirm(`Удалить тег «${tag.name}»? С задач он тоже снимется.`)) return
     try {
       await api(`/tags/${tag.id}`, { method: 'DELETE' })
+      onChanged(true)
+    } catch (err) { setError(err.message) }
+  }
+
+  const saveEdit = async () => {
+    if (!editing.name.trim()) return
+    try {
+      await api(`/tags/${editing.id}`, { method: 'PUT', body: { name: editing.name, color: editing.color } })
+      setEditing(null)
+      setError('')
       onChanged()
     } catch (err) { setError(err.message) }
   }
@@ -370,13 +417,36 @@ function TagManager({ tags, onChanged, onClose }) {
         <p className="muted small">Тегов пока нет. Например: учёба, дом, работа.</p>
       ) : (
         <div className="list">
-          {tags.map((t) => (
+          {tags.map((t) => (editing?.id === t.id ? (
+            <form key={t.id} className="list-item" onSubmit={(e) => { e.preventDefault(); saveEdit() }}>
+              <input
+                type="color"
+                className="tag-color-input"
+                value={editing.color}
+                onChange={(e) => setEditing({ ...editing, color: e.target.value })}
+                title="Цвет тега"
+              />
+              <input
+                className="input content"
+                autoFocus
+                maxLength={30}
+                value={editing.name}
+                onChange={(e) => setEditing({ ...editing, name: e.target.value })}
+                onKeyDown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); setEditing(null) } }}
+              />
+              <button className="btn btn-primary btn-sm" disabled={!editing.name.trim()} title="Сохранить (Enter)">Сохранить</button>
+              <button type="button" className="btn btn-ghost btn-icon" onClick={() => setEditing(null)} title="Отмена (Esc)">✕</button>
+            </form>
+          ) : (
             <div key={t.id} className="list-item">
               <span className="dot" style={{ background: t.color, width: 12, height: 12 }} />
-              <span className="content">{t.name}</span>
+              <button className="content tag-name-btn" onClick={() => setEditing({ id: t.id, name: t.name, color: t.color })} title="Изменить">
+                {t.name}
+              </button>
+              <button className="btn btn-ghost btn-icon" onClick={() => setEditing({ id: t.id, name: t.name, color: t.color })} title="Изменить">✏️</button>
               <button className="btn btn-ghost btn-icon" onClick={() => remove(t)} title="Удалить">🗑️</button>
             </div>
-          ))}
+          )))}
         </div>
       )}
     </Modal>

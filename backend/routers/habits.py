@@ -1,7 +1,9 @@
 import datetime as dt
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
-from sqlalchemy.orm import Session
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.orm import Session, selectinload
 
 import models
 import schemas
@@ -19,12 +21,20 @@ def get_own_habit(db: Session, user: models.User, habit_id: int) -> models.Habit
     return habit
 
 
-def habit_out(habit: models.Habit, today: dt.date) -> schemas.HabitOut:
+def habit_out(habit: models.Habit, today: dt.date, dates: set[dt.date] | None = None) -> schemas.HabitOut:
     out = schemas.HabitOut.model_validate(habit)
-    dates = {log.date for log in habit.logs}
+    if dates is None:
+        dates = {log.date for log in habit.logs}
     out.streak = calc_streak(dates, today)
     out.total = len(dates)
     return out
+
+
+def habits_query(db: Session, user_id: int, *, include_archived: bool = False):
+    q = db.query(models.Habit).options(selectinload(models.Habit.logs)).filter(models.Habit.user_id == user_id)
+    if not include_archived:
+        q = q.filter(models.Habit.archived.is_(False))
+    return q.order_by(models.Habit.id)
 
 
 @router.get("", response_model=list[schemas.HabitOut])
@@ -35,11 +45,8 @@ def list_habits(
     db: Session = Depends(get_db),
 ):
     """Список привычек. `today` — дата клиента (для правильного расчёта серии)."""
-    q = db.query(models.Habit).filter(models.Habit.user_id == user.id)
-    if not include_archived:
-        q = q.filter(models.Habit.archived.is_(False))
     today = today or dt.date.today()
-    return [habit_out(h, today) for h in q.order_by(models.Habit.id).all()]
+    return [habit_out(h, today) for h in habits_query(db, user.id, include_archived=include_archived)]
 
 
 @router.get("/logs", response_model=list[schemas.HabitLogOut])
@@ -111,17 +118,18 @@ def add_log(
     habit = get_own_habit(db, user, habit_id)
     if data.date > dt.date.today() + dt.timedelta(days=1):
         raise HTTPException(status_code=400, detail="Нельзя отмечать привычку в будущем")
+    # БД обеспечивает уникальность и при одновременных запросах на одну дату.
+    insert = sqlite_insert if db.get_bind().dialect.name == "sqlite" else pg_insert
+    statement = insert(models.HabitLog).values(habit_id=habit.id, date=data.date)
+    db.execute(statement.on_conflict_do_nothing(index_elements=["habit_id", "date"]))
     log = (
         db.query(models.HabitLog)
         .filter(models.HabitLog.habit_id == habit.id, models.HabitLog.date == data.date)
-        .first()
+        .one()
     )
-    if log is None:
-        log = models.HabitLog(habit_id=habit.id, date=data.date)
-        db.add(log)
-        db.commit()
-        db.refresh(log)
-    return log
+    result = schemas.HabitLogOut.model_validate(log)
+    db.commit()
+    return result
 
 
 @router.delete("/{habit_id}/logs/{log_date}", status_code=status.HTTP_204_NO_CONTENT)

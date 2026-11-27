@@ -3,6 +3,7 @@ import { api } from '../api'
 import { DAY_SHORT, addDays, startOfWeek, toISO, todayISO, weekDates, weekLabel } from '../dates'
 import Modal, { ConfirmDialog } from '../components/Modal'
 import IconPicker from '../components/IconPicker'
+import Checkbox, { CheckIcon } from '../components/Checkbox'
 
 const EMPTY_FORM = { title: '', description: '', icon: '✅', color: '#7c5cff', archived: false }
 
@@ -113,10 +114,9 @@ export default function Habits() {
         <button className="btn btn-primary" disabled={!form.title.trim()}>Добавить</button>
       </form>
 
-      <label className="row small muted" style={{ cursor: 'pointer' }}>
-        <input type="checkbox" checked={showArchived} onChange={(e) => setShowArchived(e.target.checked)} />
-        Показывать архивные
-      </label>
+      <div className="small muted">
+        <Checkbox size="sm" checked={showArchived} onChange={setShowArchived} label="Показывать архивные" />
+      </div>
 
       {habits.length === 0 ? (
         <div className="card empty">Пока нет привычек. Добавьте первую или загляните в каталог.</div>
@@ -145,13 +145,13 @@ export default function Habits() {
                 return (
                   <button
                     key={d}
-                    className={`day-cell ${d === today ? 'today' : ''}`}
+                    className={`day-cell ${d === today ? 'today' : ''} ${done ? 'done' : ''}`}
                     style={done ? { background: h.color, borderColor: h.color } : undefined}
                     disabled={d > today || h.archived}
                     onClick={() => toggle(h, d)}
                     title={`${DAY_SHORT[i]}, ${d}`}
                   >
-                    {done && '✓'}
+                    <CheckIcon />
                   </button>
                 )
               })}
@@ -191,10 +191,11 @@ export default function Habits() {
             <label>Описание</label>
             <textarea className="textarea" maxLength={300} value={editing.description} onChange={(e) => setEditing({ ...editing, description: e.target.value })} />
           </div>
-          <label className="row" style={{ cursor: 'pointer' }}>
-            <input type="checkbox" checked={editing.archived} onChange={(e) => setEditing({ ...editing, archived: e.target.checked })} />
-            В архиве (скрыта из списка, история сохраняется)
-          </label>
+          <Checkbox
+            checked={editing.archived}
+            onChange={(archived) => setEditing({ ...editing, archived })}
+            label="В архиве (скрыта из списка, история сохраняется)"
+          />
         </Modal>
       )}
 
